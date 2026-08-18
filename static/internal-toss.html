@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta name="referrer" content="no-referrer">
+  <title>토스 수집 관리 · 내부 전용</title>
+  <link rel="stylesheet" href="/internal-toss.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">INTERNAL · TOSS SHARELINK</p>
+      <h1>토스 상품 수집 관리</h1>
+      <p class="intro">수집된 베스트·하루특가 상품을 검토하는 내부 화면입니다. 접근 토큰은 이 브라우저 탭 세션에만 보관되며 서버·데이터베이스·로그에는 저장하지 않습니다.</p>
+    </header>
+
+    <section class="card access-card" aria-labelledby="access-title">
+      <div>
+        <p class="section-kicker">ACCESS</p>
+        <h2 id="access-title">내부 접근</h2>
+        <p class="muted">자동화 접근 토큰을 입력하면 저장 목록 조회와 수동 수집을 사용할 수 있습니다.</p>
+      </div>
+      <form id="accessForm" class="access-form">
+        <label for="accessToken">접근 토큰</label>
+        <div class="token-row">
+          <input id="accessToken" name="accessToken" type="password" autocomplete="off" spellcheck="false" placeholder="자동화 접근 토큰 입력">
+          <button type="submit" class="primary">연결</button>
+          <button type="button" id="clearToken" class="secondary">세션 지우기</button>
+        </div>
+        <p id="accessStatus" class="status" role="status">토큰이 연결되지 않았습니다.</p>
+      </form>
+    </section>
+
+    <section class="card controls" aria-labelledby="collection-title">
+      <div>
+        <p class="section-kicker">COLLECTION</p>
+        <h2 id="collection-title">수집 목록</h2>
+      </div>
+      <div class="control-grid">
+        <label>목록 종류
+          <select id="source">
+            <option value="best-selling">베스트 상품</option>
+            <option value="today-deals">하루특가</option>
+          </select>
+        </label>
+        <label>가져올 개수
+          <input id="size" type="number" min="1" max="100" value="30">
+        </label>
+        <div class="control-actions">
+          <button id="loadProducts" type="button" class="secondary">저장 목록 불러오기</button>
+          <button id="collectProducts" type="button" class="primary">토스에서 새로 수집</button>
+        </div>
+      </div>
+      <p id="collectionStatus" class="status" role="status">연결 후 저장된 수집 목록을 불러오세요.</p>
+    </section>
+
+    <section class="card products-card" aria-labelledby="products-title">
+      <div class="table-heading">
+        <div>
+          <p class="section-kicker">REVIEW</p>
+          <h2 id="products-title">상품 후보</h2>
+        </div>
+        <span id="productCount" class="count">0건</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>순위</th>
+              <th>상품</th>
+              <th>현재가</th>
+              <th>할인</th>
+              <th>상태</th>
+              <th>하루특가 종료</th>
+              <th>쉐어링크</th>
+            </tr>
+          </thead>
+          <tbody id="productRows">
+            <tr><td colspan="7" class="empty">아직 표시할 수집 데이터가 없습니다.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footnote">링크 발급은 다음 단계에서 사용자가 선택한 상품에 한해 추가합니다. 이 화면은 자동 발행·저장·예약·공개 변경을 수행하지 않습니다.</p>
+    </section>
+  </main>
+  <script src="/internal-toss.js"></script>
+</body>
+</html>

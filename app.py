@@ -403,7 +403,12 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send_bytes(sitemap.encode("utf-8"), "application/xml; charset=utf-8")
             return
         if parsed.path == "/robots.txt":
-            robots = f"User-agent: *\nAllow: /\nSitemap: {self._public_origin()}/sitemap.xml\n"
+            robots = (
+                "User-agent: *\n"
+                "Allow: /\n"
+                "Disallow: /internal-toss.html\n"
+                f"Sitemap: {self._public_origin()}/sitemap.xml\n"
+            )
             self._send_bytes(robots.encode("utf-8"), "text/plain; charset=utf-8")
             return
         if parsed.path == "/health":

@@ -119,6 +119,64 @@ ALTER TABLE blog_posts DROP CONSTRAINT IF EXISTS blog_posts_platform_check;
 ALTER TABLE blog_posts
     ADD CONSTRAINT blog_posts_platform_check
     CHECK (platform IN ('toss', 'coupang', 'threads'));
+
+CREATE TABLE IF NOT EXISTS toss_collection_runs (
+    id uuid PRIMARY KEY,
+    source text NOT NULL CHECK (source IN ('best-selling', 'today-deals')),
+    requested_size integer NOT NULL CHECK (requested_size BETWEEN 1 AND 100),
+    received_count integer NOT NULL DEFAULT 0 CHECK (received_count >= 0),
+    status text NOT NULL CHECK (status IN ('COMPLETED', 'FAILED')),
+    error_code text NOT NULL DEFAULT '',
+    error_message text NOT NULL DEFAULT '',
+    collected_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS toss_products (
+    taca_item_id text PRIMARY KEY,
+    product_name text NOT NULL,
+    thumbnail_url text NOT NULL DEFAULT '',
+    product_url text NOT NULL DEFAULT '',
+    display_price integer,
+    original_price integer,
+    discount_rate integer,
+    is_sold_out boolean NOT NULL DEFAULT false,
+    review_score numeric,
+    review_count integer,
+    best_rank integer,
+    today_deal_rank integer,
+    today_deal_end_at timestamptz,
+    first_seen_at timestamptz NOT NULL DEFAULT now(),
+    last_seen_at timestamptz NOT NULL DEFAULT now(),
+    last_best_seen_at timestamptz,
+    last_today_deal_seen_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS toss_collection_items (
+    collection_id uuid NOT NULL REFERENCES toss_collection_runs(id) ON DELETE CASCADE,
+    taca_item_id text NOT NULL REFERENCES toss_products(taca_item_id) ON DELETE CASCADE,
+    source text NOT NULL CHECK (source IN ('best-selling', 'today-deals')),
+    product_rank integer,
+    observed_price integer,
+    observed_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (collection_id, taca_item_id)
+);
+
+CREATE TABLE IF NOT EXISTS toss_share_links (
+    taca_item_id text PRIMARY KEY REFERENCES toss_products(taca_item_id) ON DELETE CASCADE,
+    short_url text NOT NULL,
+    origin_url text NOT NULL DEFAULT '',
+    publisher_id text NOT NULL DEFAULT '',
+    issued_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS toss_collection_runs_collected_idx
+    ON toss_collection_runs (collected_at DESC);
+CREATE INDEX IF NOT EXISTS toss_products_best_rank_idx
+    ON toss_products (best_rank ASC NULLS LAST, last_best_seen_at DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS toss_products_today_deal_idx
+    ON toss_products (today_deal_end_at ASC NULLS LAST, last_today_deal_seen_at DESC NULLS LAST);
 """
 
 
@@ -403,3 +461,156 @@ def notify_telegram(text: str) -> bool:
             return 200 <= response.status < 300
     except (urllib.error.URLError, TimeoutError):
         return False
+
+
+TOSS_COLLECTION_SOURCES = {"best-selling", "today-deals"}
+
+
+def _toss_collection_source(source: str) -> str:
+    normalized = str(source or "").strip().lower()
+    if normalized not in TOSS_COLLECTION_SOURCES:
+        raise ValueError("unsupported Toss collection source")
+    return normalized
+
+
+def _toss_optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid Toss numeric field") from exc
+
+
+def store_toss_collection(
+    source: str, requested_size: int, items: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Persist one documented Toss listing response and retain every observation."""
+    normalized_source = _toss_collection_source(source)
+    bounded_size = min(max(int(requested_size), 1), 100)
+    run_id = uuid.uuid4()
+    saved_count = 0
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO toss_collection_runs (id, source, requested_size, received_count, status)
+            VALUES (%s, %s, %s, %s, 'COMPLETED')
+            """,
+            (run_id, normalized_source, bounded_size, len(items)),
+        )
+        for item in items:
+            product_id = str(item.get("taca_item_id") or "").strip()
+            product_name = str(item.get("title") or "").strip()
+            if not product_id or not product_name:
+                continue
+            values = {
+                "taca_item_id": product_id,
+                "product_name": product_name[:500],
+                "thumbnail_url": str(item.get("thumbnail_url") or "")[:2000],
+                "product_url": str(item.get("product_url") or "")[:2000],
+                "display_price": _toss_optional_int(item.get("display_price")),
+                "original_price": _toss_optional_int(item.get("original_price")),
+                "discount_rate": _toss_optional_int(item.get("discount_rate")),
+                "is_sold_out": bool(item.get("is_sold_out")),
+                "review_score": item.get("review_score"),
+                "review_count": _toss_optional_int(item.get("review_count")),
+                "rank": _toss_optional_int(item.get("rank")),
+                "end_at": str(item.get("end_at") or "") or None,
+                "source": normalized_source,
+            }
+            conn.execute(
+                """
+                INSERT INTO toss_products (
+                    taca_item_id, product_name, thumbnail_url, product_url,
+                    display_price, original_price, discount_rate, is_sold_out,
+                    review_score, review_count, best_rank, today_deal_rank,
+                    today_deal_end_at, last_best_seen_at, last_today_deal_seen_at
+                )
+                VALUES (
+                    %(taca_item_id)s, %(product_name)s, %(thumbnail_url)s, %(product_url)s,
+                    %(display_price)s, %(original_price)s, %(discount_rate)s, %(is_sold_out)s,
+                    %(review_score)s, %(review_count)s,
+                    CASE WHEN %(source)s = 'best-selling' THEN %(rank)s END,
+                    CASE WHEN %(source)s = 'today-deals' THEN %(rank)s END,
+                    CASE WHEN %(source)s = 'today-deals' THEN %(end_at)s::timestamptz END,
+                    CASE WHEN %(source)s = 'best-selling' THEN now() END,
+                    CASE WHEN %(source)s = 'today-deals' THEN now() END
+                )
+                ON CONFLICT (taca_item_id) DO UPDATE SET
+                    product_name = EXCLUDED.product_name,
+                    thumbnail_url = CASE WHEN EXCLUDED.thumbnail_url <> '' THEN EXCLUDED.thumbnail_url ELSE toss_products.thumbnail_url END,
+                    product_url = CASE WHEN EXCLUDED.product_url <> '' THEN EXCLUDED.product_url ELSE toss_products.product_url END,
+                    display_price = EXCLUDED.display_price,
+                    original_price = EXCLUDED.original_price,
+                    discount_rate = EXCLUDED.discount_rate,
+                    is_sold_out = EXCLUDED.is_sold_out,
+                    review_score = EXCLUDED.review_score,
+                    review_count = EXCLUDED.review_count,
+                    best_rank = CASE WHEN %(source)s = 'best-selling' THEN %(rank)s ELSE toss_products.best_rank END,
+                    today_deal_rank = CASE WHEN %(source)s = 'today-deals' THEN %(rank)s ELSE toss_products.today_deal_rank END,
+                    today_deal_end_at = CASE WHEN %(source)s = 'today-deals' THEN %(end_at)s::timestamptz ELSE toss_products.today_deal_end_at END,
+                    last_seen_at = now(),
+                    last_best_seen_at = CASE WHEN %(source)s = 'best-selling' THEN now() ELSE toss_products.last_best_seen_at END,
+                    last_today_deal_seen_at = CASE WHEN %(source)s = 'today-deals' THEN now() ELSE toss_products.last_today_deal_seen_at END,
+                    updated_at = now()
+                """,
+                values,
+            )
+            conn.execute(
+                """
+                INSERT INTO toss_collection_items (collection_id, taca_item_id, source, product_rank, observed_price)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (collection_id, taca_item_id) DO NOTHING
+                """,
+                (run_id, product_id, normalized_source, values["rank"], values["display_price"]),
+            )
+            saved_count += 1
+    write_audit_csv(
+        "toss_collection",
+        {
+            "run_id": str(run_id),
+            "platform": "toss",
+            "status": "COMPLETED",
+            "step": normalized_source,
+            "context": {"requested_size": bounded_size, "saved_count": saved_count},
+        },
+    )
+    return {"id": str(run_id), "source": normalized_source, "saved_count": saved_count}
+
+
+def record_toss_collection_failure(source: str, requested_size: int, error: Exception) -> dict[str, Any]:
+    normalized_source = _toss_collection_source(source)
+    run_id = uuid.uuid4()
+    bounded_size = min(max(int(requested_size), 1), 100)
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO toss_collection_runs
+                (id, source, requested_size, received_count, status, error_code, error_message)
+            VALUES (%s, %s, %s, 0, 'FAILED', %s, %s)
+            """,
+            (run_id, normalized_source, bounded_size, type(error).__name__[:100], str(error)[:2000]),
+        )
+    return {"id": str(run_id), "source": normalized_source, "saved_count": 0, "status": "FAILED"}
+
+
+def recent_toss_products(source: str = "best-selling", limit: int = 100) -> list[dict[str, Any]]:
+    normalized_source = _toss_collection_source(source)
+    bounded_limit = min(max(int(limit), 1), 100)
+    rank_column = "best_rank" if normalized_source == "best-selling" else "today_deal_rank"
+    seen_column = "last_best_seen_at" if normalized_source == "best-selling" else "last_today_deal_seen_at"
+    sql = f"""
+        SELECT p.taca_item_id, p.product_name, p.thumbnail_url, p.product_url,
+               p.display_price, p.original_price, p.discount_rate, p.is_sold_out,
+               p.review_score, p.review_count, p.{rank_column} AS rank,
+               p.today_deal_end_at, p.first_seen_at, p.last_seen_at,
+               l.short_url, l.origin_url, l.issued_at
+        FROM toss_products p
+        LEFT JOIN toss_share_links l ON l.taca_item_id = p.taca_item_id
+        WHERE p.{seen_column} IS NOT NULL
+        ORDER BY p.{rank_column} ASC NULLS LAST, p.{seen_column} DESC
+        LIMIT %s
+    """
+    with _connect() as conn:
+        rows = conn.execute(sql, (bounded_limit,)).fetchall()
+    return [dict(row) for row in rows]

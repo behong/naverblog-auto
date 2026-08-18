@@ -16,6 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY --chown=appuser:appuser app.py ./app.py
 COPY --chown=appuser:appuser automation_store.py ./automation_store.py
 COPY --chown=appuser:appuser toss_open_api.py ./toss_open_api.py
+COPY --chown=appuser:appuser toss_collector.py ./toss_collector.py
+COPY --chown=appuser:appuser scripts ./scripts
 COPY --chown=appuser:appuser static ./static
 
 USER appuser

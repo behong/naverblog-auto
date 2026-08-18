@@ -25,9 +25,11 @@ from automation_store import (
     health as automation_health,
     init_schema as init_automation_schema,
     recent_runs,
+    recent_toss_products,
     upsert_post,
     upsert_run,
 )
+from toss_collector import collect_toss_listing
 from toss_open_api import (
     TossOpenApiError,
     configured as open_api_configured,
@@ -439,6 +441,11 @@ class AppHandler(BaseHTTPRequestHandler):
                     limit = int(query.get("limit", ["20"])[0])
                     self._send_json({"ok": True, "result": recent_runs(limit)})
                     return
+                if parsed.path == "/api/automation/toss/products":
+                    source = query.get("source", ["best-selling"])[0]
+                    limit = int(query.get("limit", ["30"])[0])
+                    self._send_json({"ok": True, "result": recent_toss_products(source, limit)})
+                    return
             except (ValueError, RuntimeError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
@@ -474,6 +481,11 @@ class AppHandler(BaseHTTPRequestHandler):
                     result = upsert_run(payload)
                 elif parsed.path == "/api/automation/posts":
                     result = upsert_post(payload)
+                elif parsed.path == "/api/automation/toss/collect":
+                    result = collect_toss_listing(
+                        str(payload.get("source") or "best-selling"),
+                        int(payload.get("size") or 30),
+                    )
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return

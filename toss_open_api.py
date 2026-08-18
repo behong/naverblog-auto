@@ -321,3 +321,70 @@ def product_detail(taca_item_id: str = "", taca_id: str = "") -> dict[str, objec
     if selected is None:
         raise TossOpenApiError("토스 Open API에서 상품 상세 정보를 찾지 못했습니다.")
     return normalize_product(selected)
+
+
+def _as_optional_int(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_product_card(item: dict[str, object]) -> dict[str, object]:
+    """Normalize a list-response card without discarding forward-compatible fields."""
+    return {
+        "taca_item_id": str(item.get("tacaItemId") or ""),
+        "title": str(item.get("displayName") or "").strip(),
+        "thumbnail_url": str(item.get("thumbnailUrl") or "").strip(),
+        "product_url": str(item.get("productUrl") or "").strip(),
+        "display_price": _as_optional_int(item.get("displayPrice")),
+        "original_price": _as_optional_int(item.get("originalPrice")),
+        "discount_rate": _as_optional_int(item.get("discountRate")),
+        "is_sold_out": bool(item.get("isSoldOut")),
+        "review_score": item.get("reviewScore"),
+        "review_count": _as_optional_int(item.get("reviewCount")),
+        "rank": _as_optional_int(item.get("rank")),
+        "end_at": str(item.get("endAt") or "").strip(),
+    }
+
+
+def product_listing(
+    path: str,
+    *,
+    size: int,
+    maximum_size: int,
+    cursor: str = "",
+) -> dict[str, object]:
+    """Fetch one cursor page from a documented Toss Sharelink product listing endpoint."""
+    bounded_size = min(max(int(size), 1), maximum_size)
+    params: dict[str, object] = {"size": bounded_size}
+    if cursor.strip():
+        params["cursor"] = cursor.strip()
+    payload = api_request("GET", path, params=params)
+    if not isinstance(payload, dict):
+        raise TossOpenApiError("토스 Open API 상품 목록 응답 형식이 올바르지 않습니다.")
+    raw_items = payload.get("items", [])
+    if not isinstance(raw_items, list):
+        raise TossOpenApiError("토스 Open API 상품 목록 항목 형식이 올바르지 않습니다.")
+    items = [normalize_product_card(item) for item in raw_items if isinstance(item, dict)]
+    return {
+        "items": items,
+        "next_cursor": str(payload.get("nextCursor") or ""),
+        "has_next": bool(payload.get("hasNext")),
+    }
+
+
+def best_selling_products(size: int = 30, cursor: str = "") -> dict[str, object]:
+    """Fetch the current overall best-selling product page (1–100 items)."""
+    return product_listing(
+        "/products/best-selling", size=size, maximum_size=100, cursor=cursor
+    )
+
+
+def today_deal_products(size: int = 30, cursor: str = "") -> dict[str, object]:
+    """Fetch the current today-deals product page (1–30 items)."""
+    return product_listing(
+        "/products/today-deals", size=size, maximum_size=30, cursor=cursor
+    )

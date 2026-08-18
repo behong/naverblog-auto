@@ -33,6 +33,7 @@ from admin_auth import (
 )
 from automation_store import (
     admin_password_hash,
+    admin_toss_publisher_id,
     authorized as automation_authorized,
     check_duplicate,
     configured as automation_configured,
@@ -41,10 +42,11 @@ from automation_store import (
     recent_runs,
     recent_toss_products,
     set_admin_password_hash,
+    set_admin_toss_publisher_id,
     upsert_post,
     upsert_run,
 )
-from toss_collector import collect_toss_listing
+from toss_collector import collect_toss_listing, issue_toss_share_link
 from toss_open_api import (
     TossOpenApiError,
     configured as open_api_configured,
@@ -525,6 +527,11 @@ class AppHandler(BaseHTTPRequestHandler):
                         {"ok": True, "result": {"csrf_token": session.csrf_token, "expires_at": session.expires_at}}
                     )
                     return
+                if parsed.path == "/api/admin/settings":
+                    self._send_admin_json(
+                        {"ok": True, "result": {"publisher_configured": bool(admin_toss_publisher_id())}}
+                    )
+                    return
                 if parsed.path == "/api/admin/toss/products":
                     source = query.get("source", ["best-selling"])[0]
                     limit = int(query.get("limit", ["30"])[0])
@@ -645,6 +652,17 @@ class AppHandler(BaseHTTPRequestHandler):
                 if parsed.path == "/api/admin/logout":
                     revoke_session(self._admin_cookie_value())
                     self._send_admin_json({"ok": True}, clear_cookie=True)
+                    return
+                if parsed.path == "/api/admin/settings/publisher":
+                    publisher_id = str(payload.get("publisher_id") or "").strip()
+                    import uuid
+                    uuid.UUID(publisher_id)
+                    set_admin_toss_publisher_id(publisher_id)
+                    self._send_admin_json({"ok": True, "result": {"publisher_configured": True}})
+                    return
+                if parsed.path == "/api/admin/toss/links":
+                    result = issue_toss_share_link(str(payload.get("taca_item_id") or ""))
+                    self._send_admin_json({"ok": True, "result": result})
                     return
                 if parsed.path == "/api/admin/toss/collect":
                     result = collect_toss_listing(

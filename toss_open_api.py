@@ -34,7 +34,7 @@ OPEN_API_REFRESH_MARGIN_SECONDS = int(
 )
 OPEN_API_TIMEOUT_SECONDS = int(os.getenv("TOSS_OPEN_API_TIMEOUT_SECONDS", "30"))
 OPEN_API_MAX_RETRIES = int(os.getenv("TOSS_OPEN_API_MAX_RETRIES", "3"))
-TOKEN_SCOPE = "sharelink:read"
+TOKEN_SCOPE = "sharelink:read sharelink:write"
 MAX_RESPONSE_BYTES = 3 * 1024 * 1024
 
 _token_lock = threading.RLock()
@@ -88,6 +88,8 @@ def _usable_token(payload: object) -> str:
         return ""
     if payload.get("credentialKeyHash") != _credential_hash():
         return ""
+    if payload.get("scope") != TOKEN_SCOPE:
+        return ""
     token = str(payload.get("accessToken") or "").strip()
     try:
         expires_at = float(payload.get("expiresAt") or 0)
@@ -122,6 +124,7 @@ def _save_cached_token(token: str, expires_in: int) -> None:
         "expiresAt": time.time() + max(expires_in, 1),
         "environment": OPEN_API_ENV,
         "credentialKeyHash": _credential_hash(),
+        "scope": TOKEN_SCOPE,
     }
     _memory_token.clear()
     _memory_token.update(payload)
@@ -238,6 +241,7 @@ def api_request(
     path: str,
     *,
     params: dict[str, object] | None = None,
+    json_body: dict[str, object] | None = None,
 ) -> object:
     max_attempts = max(OPEN_API_MAX_RETRIES, 1)
     refreshed = False
@@ -249,9 +253,15 @@ def api_request(
         url = f"{OPEN_API_BASE_URL}/{path.lstrip('/')}"
         if query:
             url = f"{url}?{query}"
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        data = None
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(json_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         request = urllib.request.Request(
             url,
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            data=data,
+            headers=headers,
             method=method.upper(),
         )
         status = 0
@@ -321,6 +331,37 @@ def product_detail(taca_item_id: str = "", taca_id: str = "") -> dict[str, objec
     if selected is None:
         raise TossOpenApiError("토스 Open API에서 상품 상세 정보를 찾지 못했습니다.")
     return normalize_product(selected)
+
+
+def issue_share_link(taca_item_id: str, publisher_id: str) -> dict[str, str]:
+    """Issue one documented tracked link for a selected Toss item option."""
+    item_id = str(taca_item_id or "").strip()
+    publisher = str(publisher_id or "").strip()
+    if not item_id.isdigit():
+        raise TossOpenApiError("토스 상품 옵션 ID가 올바르지 않습니다.")
+    try:
+        uuid.UUID(publisher)
+    except (AttributeError, ValueError) as exc:
+        raise TossOpenApiError("토스 퍼블리셔 UUID가 설정되지 않았습니다.") from exc
+    payload = api_request(
+        "POST",
+        "/links",
+        json_body={"tacaItemId": int(item_id), "publisherId": publisher},
+    )
+    if not isinstance(payload, dict):
+        raise TossOpenApiError("토스 쉐어링크 발급 응답 형식이 올바르지 않습니다.")
+    short_url = str(payload.get("shortUrl") or "").strip()
+    origin_url = str(payload.get("originUrl") or "").strip()
+    actual_item_id = str(payload.get("tacaItemId") or item_id).strip()
+    actual_publisher_id = str(payload.get("publisherId") or publisher).strip()
+    if not short_url.startswith("https://"):
+        raise TossOpenApiError("토스 쉐어링크 발급 응답에 단축 URL이 없습니다.")
+    return {
+        "taca_item_id": actual_item_id,
+        "publisher_id": actual_publisher_id,
+        "short_url": short_url,
+        "origin_url": origin_url,
+    }
 
 
 def _as_optional_int(value: object) -> int | None:

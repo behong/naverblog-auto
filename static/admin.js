@@ -5,6 +5,9 @@
   const loginStatus = document.querySelector("#loginStatus");
   const dashboard = document.querySelector("#dashboard");
   const logout = document.querySelector("#logout");
+  const publisherForm = document.querySelector("#publisherForm");
+  const publisherId = document.querySelector("#publisherId");
+  const publisherStatus = document.querySelector("#publisherStatus");
   const source = document.querySelector("#source");
   const size = document.querySelector("#size");
   const loadProducts = document.querySelector("#loadProducts");
@@ -24,6 +27,10 @@
     loadProducts.disabled = busy;
     collectProducts.disabled = busy;
     logout.disabled = busy;
+    publisherForm.querySelector("button[type=submit]").disabled = busy;
+    productRows.querySelectorAll("button[data-issue-id], button[data-copy-url]").forEach((button) => {
+      button.disabled = busy;
+    });
   };
 
   const clearRows = (message) => {
@@ -101,7 +108,23 @@
       row.append(stateCell);
       row.append(textCell(formatDate(item.today_deal_end_at)));
       const linkCell = document.createElement("td");
-      linkCell.append(item.short_url ? badge("발급됨", "ok") : badge("미발급", "muted"));
+      if (item.short_url) {
+        linkCell.append(badge("발급됨", "ok"));
+        const copyButton = document.createElement("button");
+        copyButton.type = "button";
+        copyButton.className = "secondary mini-action";
+        copyButton.dataset.copyUrl = item.short_url;
+        copyButton.textContent = "복사";
+        linkCell.append(copyButton);
+      } else {
+        const issueButton = document.createElement("button");
+        issueButton.type = "button";
+        issueButton.className = "primary mini-action";
+        issueButton.dataset.issueId = item.taca_item_id || "";
+        issueButton.disabled = Boolean(item.is_sold_out) || !item.taca_item_id;
+        issueButton.textContent = item.is_sold_out ? "품절" : "링크 발급";
+        linkCell.append(issueButton);
+      }
       row.append(linkCell);
       productRows.append(row);
     }
@@ -157,6 +180,17 @@
     return value;
   };
 
+  const loadSettings = async () => {
+    const settings = await api("/api/admin/settings");
+    if (settings.publisher_configured) {
+      publisherId.placeholder = "퍼블리셔 UUID가 저장되어 있습니다. 변경하려면 새 UUID를 입력하세요.";
+      setStatus(publisherStatus, "퍼블리셔 UUID가 설정됐습니다. 선택 상품의 쉐어링크를 발급할 수 있습니다.", "success");
+    } else {
+      publisherId.placeholder = "토스에서 안내받은 퍼블리셔 UUID 입력";
+      setStatus(publisherStatus, "퍼블리셔 UUID를 설정하면 선택한 상품의 쉐어링크를 발급할 수 있습니다.");
+    }
+  };
+
   const load = async (quiet = false) => {
     setBusy(true);
     if (!quiet) setStatus(collectionStatus, "저장된 수집 목록을 불러오는 중입니다.");
@@ -210,12 +244,67 @@
       }
       csrfToken = payload.result.csrf_token;
       enterDashboard();
+      await loadSettings();
       await load();
     } catch (error) {
       password.value = "";
       setStatus(loginStatus, error.message === "too_many_attempts" ? "로그인 시도가 잠시 제한됐습니다. 나중에 다시 시도해 주세요." : "비밀번호를 확인해 주세요.", "error");
     } finally {
       submit.disabled = false;
+    }
+  });
+
+  publisherForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const value = publisherId.value.trim();
+    if (!value) {
+      setStatus(publisherStatus, "토스에서 안내받은 퍼블리셔 UUID를 입력해 주세요.", "error");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api("/api/admin/settings/publisher", {
+        method: "POST",
+        body: JSON.stringify({ publisher_id: value }),
+      });
+      publisherId.value = "";
+      await loadSettings();
+    } catch (error) {
+      setStatus(publisherStatus, error.message || "퍼블리셔 UUID를 저장하지 못했습니다.", "error");
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  productRows.addEventListener("click", async (event) => {
+    const target = event.target instanceof Element ? event.target.closest("button") : null;
+    if (!target) return;
+    const copyUrl = target.dataset.copyUrl;
+    if (copyUrl) {
+      try {
+        await navigator.clipboard.writeText(copyUrl);
+        setStatus(collectionStatus, "쉐어링크를 클립보드에 복사했습니다.", "success");
+      } catch (_) {
+        setStatus(collectionStatus, "브라우저가 클립보드 복사를 허용하지 않았습니다. 링크를 직접 복사해 주세요.", "error");
+      }
+      return;
+    }
+    const itemId = target.dataset.issueId;
+    if (!itemId) return;
+    target.disabled = true;
+    target.textContent = "발급 중";
+    setStatus(collectionStatus, "선택한 상품의 토스 쉐어링크를 발급하고 있습니다.");
+    try {
+      const result = await api("/api/admin/toss/links", {
+        method: "POST",
+        body: JSON.stringify({ taca_item_id: itemId }),
+      });
+      setStatus(collectionStatus, result.reused ? "기존 쉐어링크를 다시 불러왔습니다." : "쉐어링크를 발급해 저장했습니다.", "success");
+      await load(true);
+    } catch (error) {
+      target.disabled = false;
+      target.textContent = "링크 발급";
+      setStatus(collectionStatus, error.message || "쉐어링크를 발급하지 못했습니다.", "error");
     }
   });
 
@@ -245,6 +334,7 @@
       csrfToken = session.csrf_token || "";
       if (!csrfToken) throw new Error("세션 정보가 없습니다.");
       enterDashboard();
+      await loadSettings();
       await load();
     } catch (_) {
       leaveDashboard();

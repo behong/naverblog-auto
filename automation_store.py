@@ -11,7 +11,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import psycopg
 from psycopg.rows import dict_row
@@ -181,9 +181,11 @@ CREATE INDEX IF NOT EXISTS toss_products_today_deal_idx
 CREATE TABLE IF NOT EXISTS admin_settings (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
     password_hash text NOT NULL DEFAULT '',
+    toss_publisher_id text NOT NULL DEFAULT '',
     password_updated_at timestamptz,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE admin_settings ADD COLUMN IF NOT EXISTS toss_publisher_id text NOT NULL DEFAULT '';
 """
 
 
@@ -225,6 +227,31 @@ def admin_password_hash() -> str:
             "SELECT password_hash FROM admin_settings WHERE singleton = true"
         ).fetchone()
     return str((row or {}).get("password_hash") or "")
+
+
+def admin_toss_publisher_id() -> str:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT toss_publisher_id FROM admin_settings WHERE singleton = true"
+        ).fetchone()
+    return str((row or {}).get("toss_publisher_id") or "")
+
+
+def set_admin_toss_publisher_id(publisher_id: str) -> None:
+    value = str(publisher_id or "").strip()
+    if not value:
+        raise ValueError("Toss publisher ID is required")
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO admin_settings (singleton, toss_publisher_id)
+            VALUES (true, %s)
+            ON CONFLICT (singleton) DO UPDATE SET
+                toss_publisher_id = EXCLUDED.toss_publisher_id,
+                updated_at = now()
+            """,
+            (value,),
+        )
 
 
 def set_admin_password_hash(password_hash: str) -> None:
@@ -625,6 +652,52 @@ def record_toss_collection_failure(source: str, requested_size: int, error: Exce
             (run_id, normalized_source, bounded_size, type(error).__name__[:100], str(error)[:2000]),
         )
     return {"id": str(run_id), "source": normalized_source, "saved_count": 0, "status": "FAILED"}
+
+
+def ensure_toss_share_link(
+    taca_item_id: str,
+    issuer: Callable[[str], dict[str, str]],
+) -> dict[str, Any]:
+    """Return a stored link or issue and persist exactly one link for a selected product option."""
+    product_id = str(taca_item_id or "").strip()
+    if not product_id.isdigit():
+        raise ValueError("invalid Toss item ID")
+    with _connect() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (product_id,))
+        existing = conn.execute(
+            "SELECT taca_item_id, short_url, origin_url, publisher_id, issued_at FROM toss_share_links WHERE taca_item_id = %s",
+            (product_id,),
+        ).fetchone()
+        if existing:
+            result = dict(existing)
+            result["reused"] = True
+            return result
+        product = conn.execute(
+            "SELECT taca_item_id, product_name, is_sold_out FROM toss_products WHERE taca_item_id = %s",
+            (product_id,),
+        ).fetchone()
+        if not product:
+            raise ValueError("수집된 토스 상품을 찾지 못했습니다.")
+        if bool(product["is_sold_out"]):
+            raise ValueError("품절 상품은 쉐어링크를 발급할 수 없습니다.")
+        issued = issuer(product_id)
+        issued_id = str(issued.get("taca_item_id") or "").strip()
+        short_url = str(issued.get("short_url") or "").strip()
+        origin_url = str(issued.get("origin_url") or "").strip()
+        publisher_id = str(issued.get("publisher_id") or "").strip()
+        if issued_id != product_id or not short_url.startswith("https://") or not publisher_id:
+            raise ValueError("토스 쉐어링크 발급 응답을 검증하지 못했습니다.")
+        row = conn.execute(
+            """
+            INSERT INTO toss_share_links (taca_item_id, short_url, origin_url, publisher_id)
+            VALUES (%s, %s, %s, %s)
+            RETURNING taca_item_id, short_url, origin_url, publisher_id, issued_at
+            """,
+            (product_id, short_url, origin_url, publisher_id),
+        ).fetchone()
+    result = dict(row or {})
+    result["reused"] = False
+    return result
 
 
 def recent_toss_products(source: str = "best-selling", limit: int = 100) -> list[dict[str, Any]]:

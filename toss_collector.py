@@ -3,12 +3,15 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from automation_store import (
+    admin_toss_publisher_id,
+    ensure_toss_share_link,
     record_toss_collection_failure,
     store_toss_collection,
 )
 from toss_open_api import (
     TossOpenApiError,
     best_selling_products,
+    issue_share_link,
     today_deal_products,
 )
 
@@ -23,6 +26,20 @@ def _collector_for(source: str) -> Callable[[int], dict[str, object]]:
     if normalized == "today-deals":
         return lambda size: today_deal_products(size=min(size, 30))
     raise ValueError("지원하지 않는 토스 수집 목록입니다.")
+
+
+def issue_toss_share_link(taca_item_id: str) -> dict[str, Any]:
+    """Issue exactly one tracked link only after an authenticated admin selects a product."""
+    publisher_id = admin_toss_publisher_id()
+    if not publisher_id:
+        raise TossOpenApiError("관리자 설정에서 토스 퍼블리셔 UUID를 먼저 저장해 주세요.")
+    try:
+        return ensure_toss_share_link(
+            taca_item_id,
+            lambda selected_id: issue_share_link(selected_id, publisher_id),
+        )
+    except (RuntimeError, ValueError, TossOpenApiError) as exc:
+        raise TossOpenApiError(f"토스 쉐어링크 발급에 실패했습니다: {exc}") from exc
 
 
 def collect_toss_listing(source: str = "best-selling", size: int = 30) -> dict[str, Any]:

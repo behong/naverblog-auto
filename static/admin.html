@@ -6,7 +6,7 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="referrer" content="no-referrer">
   <title>관리자 · 토스 수집 관리</title>
-  <link rel="stylesheet" href="/internal-toss.css?v=admin-panel-v2">
+  <link rel="stylesheet" href="/internal-toss.css?v=admin-link-v1">
 </head>
 <body>
   <main class="shell">
@@ -33,6 +33,20 @@
     </section>
 
     <section id="dashboard" hidden>
+      <section class="card controls" aria-labelledby="publisher-title">
+        <div>
+          <p class="section-kicker">PUBLISHER</p>
+          <h2 id="publisher-title">토스 쉐어링크 발급 설정</h2>
+        </div>
+        <form id="publisherForm" class="publisher-form">
+          <label for="publisherId">토스 퍼블리셔 UUID
+            <input id="publisherId" name="publisherId" type="text" autocomplete="off" spellcheck="false" placeholder="토스에서 안내받은 퍼블리셔 UUID 입력">
+          </label>
+          <button type="submit" class="secondary">퍼블리셔 UUID 저장</button>
+        </form>
+        <p id="publisherStatus" class="status" role="status">퍼블리셔 UUID를 설정하면 선택한 상품의 쉐어링크를 발급할 수 있습니다.</p>
+      </section>
+
       <section class="card controls" aria-labelledby="collection-title">
         <div class="table-heading">
           <div>
@@ -85,10 +99,10 @@
             </tbody>
           </table>
         </div>
-        <p class="footnote">현재 단계에서는 수집 목록 조회와 수동 수집만 제공합니다. 쉐어링크 발급은 다음 단계에서 상품별 사용자 선택으로만 추가합니다.</p>
+        <p class="footnote">각 행의 발급 버튼은 사용자가 직접 선택한 상품에 대해서만 토스 쉐어링크를 발급합니다. 자동 발행·저장·예약·공개 변경은 수행하지 않습니다.</p>
       </section>
     </section>
   </main>
-  <script src="/admin.js?v=admin-panel-v2"></script>
+  <script src="/admin.js?v=admin-link-v1"></script>
 </body>
 </html>

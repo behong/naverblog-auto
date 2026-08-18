@@ -81,3 +81,38 @@ def test_collect_toss_listing_persists_documented_best_listing(mock_best, mock_s
         "next_cursor_present": False,
         "run_id": "run-1",
     }
+
+
+@patch(
+    "toss_open_api.api_request",
+    return_value={
+        "tacaItemId": 12345,
+        "publisherId": "550e8400-e29b-41d4-a716-446655440000",
+        "shortUrl": "https://toss.im/_m/abcDE",
+        "originUrl": "https://toss.shopping/t/9876?k=tracked",
+    },
+)
+def test_issue_share_link_uses_documented_selected_item_request(mock_request):
+    from toss_open_api import issue_share_link
+
+    result = issue_share_link("12345", "550e8400-e29b-41d4-a716-446655440000")
+
+    mock_request.assert_called_once_with(
+        "POST",
+        "/links",
+        json_body={"tacaItemId": 12345, "publisherId": "550e8400-e29b-41d4-a716-446655440000"},
+    )
+    assert result["short_url"] == "https://toss.im/_m/abcDE"
+    assert result["taca_item_id"] == "12345"
+
+
+@patch("toss_collector.ensure_toss_share_link", return_value={"short_url": "https://toss.im/_m/existing", "reused": True})
+@patch("toss_collector.admin_toss_publisher_id", return_value="550e8400-e29b-41d4-a716-446655440000")
+def test_selected_share_link_uses_local_deduplication_before_issuing(mock_publisher, mock_ensure):
+    from toss_collector import issue_toss_share_link
+
+    result = issue_toss_share_link("12345")
+
+    assert result["reused"] is True
+    mock_publisher.assert_called_once()
+    mock_ensure.assert_called_once()

@@ -107,3 +107,9 @@ tbody tr:last-child td { border-bottom: 0; }
   .token-row input { flex-basis: 100%; }
   .token-row button, .control-actions button { flex: 1; }
 }
+
+/* Explicitly win over card layout declarations when JavaScript toggles a panel. */
+#loginPanel[hidden],
+#dashboard[hidden] {
+  display: none !important;
+}

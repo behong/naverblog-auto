@@ -177,6 +177,13 @@ CREATE INDEX IF NOT EXISTS toss_products_best_rank_idx
     ON toss_products (best_rank ASC NULLS LAST, last_best_seen_at DESC NULLS LAST);
 CREATE INDEX IF NOT EXISTS toss_products_today_deal_idx
     ON toss_products (today_deal_end_at ASC NULLS LAST, last_today_deal_seen_at DESC NULLS LAST);
+
+CREATE TABLE IF NOT EXISTS admin_settings (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+    password_hash text NOT NULL DEFAULT '',
+    password_updated_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
 """
 
 
@@ -210,6 +217,32 @@ def _connect() -> psycopg.Connection[Any]:
 def init_schema() -> None:
     with _connect() as conn:
         conn.execute(SCHEMA_SQL)
+
+
+def admin_password_hash() -> str:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM admin_settings WHERE singleton = true"
+        ).fetchone()
+    return str((row or {}).get("password_hash") or "")
+
+
+def set_admin_password_hash(password_hash: str) -> None:
+    value = str(password_hash or "").strip()
+    if not value:
+        raise ValueError("administrator password hash is required")
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO admin_settings (singleton, password_hash, password_updated_at)
+            VALUES (true, %s, now())
+            ON CONFLICT (singleton) DO UPDATE SET
+                password_hash = EXCLUDED.password_hash,
+                password_updated_at = now(),
+                updated_at = now()
+            """,
+            (value,),
+        )
 
 
 def _redact(value: Any) -> Any:

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta name="referrer" content="no-referrer">
+  <title>관리자 · 토스 수집 관리</title>
+  <link rel="stylesheet" href="/internal-toss.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">ADMIN · TOSS SHARELINK</p>
+      <h1>토스 상품 수집 관리</h1>
+      <p class="intro">비밀번호 로그인 후 베스트·하루특가 상품을 검토하고 수동 수집하는 관리자 화면입니다. 자동 발행·저장·예약·공개 변경은 수행하지 않습니다.</p>
+    </header>
+
+    <section id="loginPanel" class="card access-card" aria-labelledby="login-title">
+      <div>
+        <p class="section-kicker">SIGN IN</p>
+        <h2 id="login-title">관리자 로그인</h2>
+        <p class="muted">비밀번호 원문은 서버에 저장하지 않으며, 로그인 성공 시 보안 세션 쿠키만 발급됩니다.</p>
+      </div>
+      <form id="loginForm" class="access-form">
+        <label for="password">관리자 비밀번호</label>
+        <div class="token-row">
+          <input id="password" name="password" type="password" autocomplete="current-password" required placeholder="관리자 비밀번호 입력">
+          <button type="submit" class="primary">로그인</button>
+        </div>
+        <p id="loginStatus" class="status" role="status">로그인 후 수집 목록을 확인할 수 있습니다.</p>
+      </form>
+    </section>
+
+    <section id="dashboard" hidden>
+      <section class="card controls" aria-labelledby="collection-title">
+        <div class="table-heading">
+          <div>
+            <p class="section-kicker">COLLECTION</p>
+            <h2 id="collection-title">수집 목록</h2>
+          </div>
+          <button id="logout" type="button" class="secondary">로그아웃</button>
+        </div>
+        <div class="control-grid">
+          <label>목록 종류
+            <select id="source">
+              <option value="best-selling">베스트 상품</option>
+              <option value="today-deals">하루특가</option>
+            </select>
+          </label>
+          <label>가져올 개수
+            <input id="size" type="number" min="1" max="100" value="30">
+          </label>
+          <div class="control-actions">
+            <button id="loadProducts" type="button" class="secondary">저장 목록 불러오기</button>
+            <button id="collectProducts" type="button" class="primary">토스에서 새로 수집</button>
+          </div>
+        </div>
+        <p id="collectionStatus" class="status" role="status">저장된 수집 목록을 불러오세요.</p>
+      </section>
+
+      <section class="card products-card" aria-labelledby="products-title">
+        <div class="table-heading">
+          <div>
+            <p class="section-kicker">REVIEW</p>
+            <h2 id="products-title">상품 후보</h2>
+          </div>
+          <span id="productCount" class="count">0건</span>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>순위</th>
+                <th>상품</th>
+                <th>현재가</th>
+                <th>할인</th>
+                <th>상태</th>
+                <th>하루특가 종료</th>
+                <th>쉐어링크</th>
+              </tr>
+            </thead>
+            <tbody id="productRows">
+              <tr><td colspan="7" class="empty">로그인 후 수집 목록을 불러오세요.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="footnote">현재 단계에서는 수집 목록 조회와 수동 수집만 제공합니다. 쉐어링크 발급은 다음 단계에서 상품별 사용자 선택으로만 추가합니다.</p>
+      </section>
+    </section>
+  </main>
+  <script src="/admin.js"></script>
+</body>
+</html>

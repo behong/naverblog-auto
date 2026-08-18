@@ -23,3 +23,10 @@
 `https://blogauto.hongzi.us/internal-toss.html`이 정상적으로 배포됐다. 화면은 접근 토큰 입력 전에는 상품 후보를 비워 둔다. 토큰 없이 `GET /api/automation/toss/products?source=best-selling&limit=1`를 호출한 결과는 HTTP 401 및 `{"ok": false, "error": "unauthorized"}`였으며, 상품 데이터는 반환되지 않았다.
 
 내부 페이지에는 `noindex,nofollow,noarchive` 메타 태그를 적용하고 `robots.txt`에도 `/internal-toss.html`을 제외했다. 페이지는 정적 파일이므로 주소 자체는 알 수 있지만, 저장 목록 조회와 수동 수집은 Bearer 자동화 토큰을 가진 요청만 수행할 수 있다.
+
+
+## 웹 기반 관리자 최초 설정 전환
+
+사용자에게 보이지 않는 PowerShell 입력 방식은 중단했다. 공개 배포된 `https://blogauto.hongzi.us/admin/setup` 페이지에서 기존 내부 접근 토큰으로 최초 인증한 뒤 새 관리자 비밀번호를 설정하도록 전환했다. 페이지에는 기존 토큰·새 비밀번호·확인 비밀번호가 모두 password input으로만 표시된다.
+
+최초 설정 API `POST /api/admin/setup`는 기존 Bearer 자동화 토큰이 없을 때 HTTP 401 및 `{"ok": false, "error": "unauthorized"}`를 반환한다. 따라서 공개 URL을 아는 것만으로는 관리자 비밀번호를 설정하거나 변경할 수 없다. 비밀번호 원문은 저장하지 않고 PBKDF2 해시만 `admin_settings` 테이블에 저장하며, 변경 시 기존 관리자 세션을 모두 무효화한다.

@@ -15,10 +15,24 @@ import webbrowser
 from html import escape, unescape
 from html.parser import HTMLParser
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from admin_auth import (
+    AdminSession,
+    create_password_hash,
+    create_session,
+    csrf_valid,
+    login_allowed,
+    record_failed_login,
+    revoke_all_sessions,
+    revoke_session,
+    session_for,
+    verify_password,
+)
 from automation_store import (
+    admin_password_hash,
     authorized as automation_authorized,
     check_duplicate,
     configured as automation_configured,
@@ -26,6 +40,7 @@ from automation_store import (
     init_schema as init_automation_schema,
     recent_runs,
     recent_toss_products,
+    set_admin_password_hash,
     upsert_post,
     upsert_run,
 )
@@ -390,6 +405,72 @@ class AppHandler(BaseHTTPRequestHandler):
         self._send_json({"ok": False, "error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
         return False
 
+    def _request_is_secure(self) -> bool:
+        forwarded = self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+        if forwarded in {"http", "https"}:
+            return forwarded == "https"
+        configured = os.getenv("PUBLIC_BASE_URL", "").strip().lower()
+        return configured.startswith("https://")
+
+    def _admin_password_hash(self) -> str:
+        try:
+            return admin_password_hash()
+        except RuntimeError:
+            return ""
+
+    def _admin_cookie_value(self) -> str:
+        try:
+            cookies = SimpleCookie(self.headers.get("Cookie", ""))
+            return str(cookies.get("nba_admin_session").value) if cookies.get("nba_admin_session") else ""
+        except (ValueError, TypeError):
+            return ""
+
+    def _admin_session(self) -> AdminSession | None:
+        return session_for(self._admin_cookie_value())
+
+    def _admin_cookie_header(self, raw_token: str = "", clear: bool = False) -> str:
+        cookies = SimpleCookie()
+        cookies["nba_admin_session"] = "" if clear else raw_token
+        morsel = cookies["nba_admin_session"]
+        morsel["path"] = "/"
+        morsel["httponly"] = True
+        morsel["samesite"] = "Strict"
+        if self._request_is_secure():
+            morsel["secure"] = True
+        if clear:
+            morsel["max-age"] = 0
+        return cookies.output(header="").strip()
+
+    def _send_admin_json(
+        self,
+        payload: object,
+        status: int = 200,
+        *,
+        cookie_token: str = "",
+        clear_cookie: bool = False,
+    ) -> None:
+        headers: dict[str, str] = {"Cache_Control": "no-store"}
+        if cookie_token or clear_cookie:
+            headers["Set_Cookie"] = self._admin_cookie_header(cookie_token, clear_cookie)
+        self._send_json_with_headers(payload, status, headers)
+
+    def _send_json_with_headers(self, payload: object, status: int, headers: dict[str, str]) -> None:
+        data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        self._send_bytes(data, "application/json; charset=utf-8", status, **headers)
+
+    def _require_admin(self) -> AdminSession | None:
+        session = self._admin_session()
+        if session:
+            return session
+        self._send_admin_json({"ok": False, "error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
+        return None
+
+    def _require_admin_csrf(self, session: AdminSession) -> bool:
+        if csrf_valid(session, self.headers.get("X-CSRF-Token")):
+            return True
+        self._send_admin_json({"ok": False, "error": "csrf_invalid"}, HTTPStatus.FORBIDDEN)
+        return False
+
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/sitemap.xml":
@@ -407,6 +488,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 "User-agent: *\n"
                 "Allow: /\n"
                 "Disallow: /internal-toss.html\n"
+                "Disallow: /admin/\n"
                 f"Sitemap: {self._public_origin()}/sitemap.xml\n"
             )
             self._send_bytes(robots.encode("utf-8"), "text/plain; charset=utf-8")
@@ -428,6 +510,30 @@ class AppHandler(BaseHTTPRequestHandler):
                 },
                 HTTPStatus.OK if status == "ok" else HTTPStatus.SERVICE_UNAVAILABLE,
             )
+            return
+        if parsed.path.startswith("/api/admin/"):
+            if not self._admin_password_hash():
+                self._send_admin_json({"ok": False, "error": "admin_not_configured"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            session = self._require_admin()
+            if session is None:
+                return
+            try:
+                query = urllib.parse.parse_qs(parsed.query)
+                if parsed.path == "/api/admin/session":
+                    self._send_admin_json(
+                        {"ok": True, "result": {"csrf_token": session.csrf_token, "expires_at": session.expires_at}}
+                    )
+                    return
+                if parsed.path == "/api/admin/toss/products":
+                    source = query.get("source", ["best-selling"])[0]
+                    limit = int(query.get("limit", ["30"])[0])
+                    self._send_admin_json({"ok": True, "result": recent_toss_products(source, limit)})
+                    return
+            except (ValueError, RuntimeError) as exc:
+                self._send_admin_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_error(HTTPStatus.NOT_FOUND)
             return
         if parsed.path.startswith("/api/automation/"):
             if not self._require_automation_auth():
@@ -460,7 +566,12 @@ class AppHandler(BaseHTTPRequestHandler):
             self._handle_image(parsed)
             return
 
-        relative = "index.html" if parsed.path == "/" else parsed.path.lstrip("/")
+        if parsed.path in {"/admin", "/admin/"}:
+            relative = "admin.html"
+        elif parsed.path in {"/admin/setup", "/admin/setup/"}:
+            relative = "admin-setup.html"
+        else:
+            relative = "index.html" if parsed.path == "/" else parsed.path.lstrip("/")
         file_path = (STATIC_DIR / relative).resolve()
         try:
             file_path.relative_to(STATIC_DIR.resolve())
@@ -477,6 +588,73 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/admin/setup":
+            if not self._require_automation_auth():
+                return
+            try:
+                payload = self._read_json()
+                password = str(payload.get("password") or "")
+                confirmation = str(payload.get("confirmation") or "")
+                if password != confirmation:
+                    raise ValueError("비밀번호 확인이 일치하지 않습니다.")
+                set_admin_password_hash(create_password_hash(password))
+                revoke_all_sessions()
+                self._send_json({"ok": True, "result": {"configured": True}})
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/api/admin/login":
+            configured_hash = self._admin_password_hash()
+            if not configured_hash:
+                self._send_admin_json({"ok": False, "error": "admin_not_configured"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            address = str(self.client_address[0] or "unknown")
+            if not login_allowed(address):
+                self._send_admin_json({"ok": False, "error": "too_many_attempts"}, HTTPStatus.TOO_MANY_REQUESTS)
+                return
+            try:
+                payload = self._read_json()
+                password = str(payload.get("password") or "")
+            except (ValueError, json.JSONDecodeError):
+                self._send_admin_json({"ok": False, "error": "invalid_request"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not verify_password(password, configured_hash):
+                record_failed_login(address)
+                self._send_admin_json({"ok": False, "error": "invalid_credentials"}, HTTPStatus.UNAUTHORIZED)
+                return
+            raw_token, session = create_session()
+            self._send_admin_json(
+                {"ok": True, "result": {"csrf_token": session.csrf_token, "expires_at": session.expires_at}},
+                cookie_token=raw_token,
+            )
+            return
+        if parsed.path.startswith("/api/admin/"):
+            if not self._admin_password_hash():
+                self._send_admin_json({"ok": False, "error": "admin_not_configured"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            session = self._require_admin()
+            if session is None:
+                return
+            if not self._require_admin_csrf(session):
+                return
+            try:
+                payload = self._read_json()
+                if parsed.path == "/api/admin/logout":
+                    revoke_session(self._admin_cookie_value())
+                    self._send_admin_json({"ok": True}, clear_cookie=True)
+                    return
+                if parsed.path == "/api/admin/toss/collect":
+                    result = collect_toss_listing(
+                        str(payload.get("source") or "best-selling"),
+                        int(payload.get("size") or 30),
+                    )
+                    self._send_admin_json({"ok": True, "result": result})
+                    return
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_admin_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
         if parsed.path.startswith("/api/automation/"):
             if not self._require_automation_auth():
                 return

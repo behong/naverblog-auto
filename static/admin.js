@@ -108,8 +108,11 @@
   };
 
   const enterDashboard = () => {
+    // Set both the semantic hidden state and inline display so cached layout CSS cannot leave both panels visible.
     loginPanel.hidden = true;
+    loginPanel.style.display = "none";
     dashboard.hidden = false;
+    dashboard.style.display = "block";
     password.value = "";
     setStatus(loginStatus, "");
   };
@@ -117,7 +120,9 @@
   const leaveDashboard = (message = "로그인 후 수집 목록을 확인할 수 있습니다.") => {
     csrfToken = "";
     dashboard.hidden = true;
+    dashboard.style.display = "none";
     loginPanel.hidden = false;
+    loginPanel.style.display = "grid";
     clearRows("로그인 후 수집 목록을 불러오세요.");
     setStatus(loginStatus, message);
   };

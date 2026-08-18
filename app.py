@@ -584,7 +584,10 @@ class AppHandler(BaseHTTPRequestHandler):
         content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
         if content_type.startswith("text/") or content_type in {"application/javascript", "application/json"}:
             content_type += "; charset=utf-8"
-        self._send_bytes(file_path.read_bytes(), content_type)
+        cache_headers: dict[str, str] = {}
+        if relative in {"admin.html", "admin.js", "admin-setup.html", "admin-setup.js", "internal-toss.css"}:
+            cache_headers["Cache_Control"] = "no-store, max-age=0"
+        self._send_bytes(file_path.read_bytes(), content_type, **cache_headers)
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)

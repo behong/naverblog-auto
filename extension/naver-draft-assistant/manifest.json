@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "네이버 초안 입력 도우미",
+  "version": "0.4.11",
+  "description": "blogauto.hongzi.us에서 만든 초안을 네이버 글쓰기 화면에 입력합니다. 발행 기능은 제공하지 않습니다.",
+  "permissions": ["storage", "debugger"],
+  "host_permissions": ["https://blogauto.hongzi.us/*"],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "네이버 초안 입력 도우미"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://blogauto.hongzi.us/*"],
+      "js": ["bridge-blogauto.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://blog.naver.com/*", "https://m.blog.naver.com/*"],
+      "js": ["naver-editor.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+tests
+참고
+*.png
+*.jpg
+*.jpeg
+README.md
+start.bat
+docker-compose*.yml

@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+.DS_Store
+.env
+
+# Local credentials, browser sessions, runtime state, and generated diagnostics
+.env.*
+data/browser-profile/
+_backup_*/
+.pytest_cache/
+pytest-cache-files-*/
+preflight-result-*.txt
+*.log
+*.sqlite
+*.db
+
+# Local historical copies and non-source reference material
+*.backup-*
+*.bak-*
+참고/
+static/downloads/naver-draft-assistant-beta-[0-9]*.zip

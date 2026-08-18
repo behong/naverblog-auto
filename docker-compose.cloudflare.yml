@@ -1,0 +1,20 @@
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: naverblog-auto-cloudflared
+    profiles:
+      - cloudflare
+    restart: unless-stopped
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token
+      - ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      naverblog-auto:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

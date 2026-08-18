@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">토스쇼핑 블로그 글 도우미</title>
+  <rect width="64" height="64" rx="17" fill="#03c75a" />
+  <path fill="#fff" d="M15 14h10.5L39 34.3V14h10v36H38.5L25 29.7V50H15V14Z" />
+</svg>

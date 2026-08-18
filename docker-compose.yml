@@ -1,0 +1,44 @@
+services:
+  naverblog-auto:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: naverblog-auto
+    restart: unless-stopped
+    init: true
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8765
+      APP_OPEN_BROWSER: "false"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      TOSS_OPEN_API_ENV: ${TOSS_OPEN_API_ENV:-production}
+      TOSS_OPEN_API_ACCESS_KEY: ${TOSS_OPEN_API_ACCESS_KEY:-}
+      TOSS_OPEN_API_SECRET_KEY: ${TOSS_OPEN_API_SECRET_KEY:-}
+      TOSS_OPEN_API_TOKEN_STORE_FILE: /tmp/toss_open_api_token.json
+      TOSS_OPEN_API_TOKEN_REFRESH_MARGIN_SECONDS: ${TOSS_OPEN_API_TOKEN_REFRESH_MARGIN_SECONDS:-300}
+      TOSS_OPEN_API_TIMEOUT_SECONDS: ${TOSS_OPEN_API_TIMEOUT_SECONDS:-30}
+      TOSS_OPEN_API_MAX_RETRIES: ${TOSS_OPEN_API_MAX_RETRIES:-3}
+      DATABASE_URL: ${DATABASE_URL:-}
+      AUTOMATION_API_TOKEN: ${AUTOMATION_API_TOKEN:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      DB_MAX_RETRIES: ${DB_MAX_RETRIES:-3}
+    ports:
+      - "127.0.0.1:${NAVERBLOG_PORT:-8765}:8765"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3).read()
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

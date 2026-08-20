@@ -1,4 +1,5 @@
 const collectButton = document.getElementById('collect');
+const inspectButton = document.getElementById('inspect');
 const statusElement = document.getElementById('status');
 
 function setStatus(message) {
@@ -178,6 +179,32 @@ function scrapeGoldboxCandidates() {
   };
 }
 
+function inspectFirstGoldboxCard() {
+  const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const image = document.querySelector('img[alt="product"]');
+  if (!image) {
+    return { ok: false, reason: 'product_image_not_found', page_url: location.href };
+  }
+  const card = image.parentElement?.parentElement || image.parentElement;
+  const controls = Array.from(card?.querySelectorAll('button, [role="button"], a, div') || [])
+    .map((node) => ({
+      tag: node.tagName.toLowerCase(),
+      text: clean(node.textContent).slice(0, 160),
+      class_name: clean(node.className).slice(0, 180),
+      role: clean(node.getAttribute('role')),
+      aria_label: clean(node.getAttribute('aria-label')),
+    }))
+    .filter((item) => /상품정보|링크 생성/.test(item.text))
+    .slice(0, 20);
+  return {
+    ok: true,
+    page_url: location.href,
+    card_text: clean(card?.textContent).slice(0, 600),
+    image_src: image.currentSrc || image.src || '',
+    controls,
+  };
+}
+
 async function downloadJson(payload, filename) {
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const objectUrl = URL.createObjectURL(blob);
@@ -187,6 +214,30 @@ async function downloadJson(payload, filename) {
     setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   }
 }
+
+inspectButton.addEventListener('click', async () => {
+  inspectButton.disabled = true;
+  setStatus('첫 후보 카드의 상품정보 제어 구조를 확인하는 중입니다…');
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !String(tab.url || '').startsWith('https://partners.coupang.com/')) {
+      throw new Error('쿠팡 파트너스 골드박스 탭에서만 사용할 수 있습니다.');
+    }
+    const results = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: inspectFirstGoldboxCard });
+    const payload = {
+      source: 'coupang-partners-goldbox-product-info-diagnostic',
+      captured_at: new Date().toISOString(),
+      page_url: tab.url,
+      frames: results.map((result) => ({ frame_id: result.frameId, result: result.result || {} })),
+    };
+    await downloadJson(payload, `coupang-goldbox-product-info-diagnostic-${new Date().toISOString().slice(0, 10)}.json`);
+    setStatus('상품정보 제어 구조 진단 JSON을 저장했습니다. 링크 생성·발행은 실행하지 않았습니다.');
+  } catch (error) {
+    setStatus(`저장하지 않았습니다: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    inspectButton.disabled = false;
+  }
+});
 
 collectButton.addEventListener('click', async () => {
   collectButton.disabled = true;

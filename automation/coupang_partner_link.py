@@ -90,3 +90,50 @@ def parse_coupang_partner_link_result(payload: object) -> dict[str, Any]:
         "requires_conditional_price_verification": True,
         "approval_only": True,
     }
+
+
+def parse_coupang_batch_link_results(payload: object) -> tuple[list[dict[str, Any]], list[dict[str, str]], dict[str, int]]:
+    """Validate a batch collector export without creating a queue, approval request, or post."""
+    values = payload if isinstance(payload, dict) else {}
+    raw_results = values.get("results") if isinstance(values.get("results"), list) else []
+    records: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    seen_product_ids: set[str] = set()
+
+    for index, raw in enumerate(raw_results, start=1):
+        item = raw if isinstance(raw, dict) else {}
+        candidate = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
+        label = _clean(candidate.get("product_name")) or f"후보 {index}"
+        if not item.get("ok"):
+            failures.append({"product_name": label, "reason": _clean(item.get("error")) or "link_generation_failed"})
+            continue
+        try:
+            review_record = parse_coupang_partner_link_result(
+                {"frames": [{"result": {**item, "link_detected": bool(item.get("generated_urls"))}}]}
+            )
+        except CoupangLinkResultError as exc:
+            failures.append({"product_name": label, "reason": str(exc)})
+            continue
+        if review_record["product_id"] in seen_product_ids:
+            failures.append({"product_name": review_record["product_name"], "reason": "duplicate_product_id"})
+            continue
+        seen_product_ids.add(review_record["product_id"])
+        records.append(review_record)
+
+    records.sort(key=lambda item: (item["sale_price"], item["product_name"]))
+    return records, failures, {
+        "input": len(raw_results),
+        "verified": len(records),
+        "failed": len(failures),
+    }
+
+
+def to_batch_review_payload(records: list[dict[str, Any]], failures: list[dict[str, str]], summary: dict[str, int]) -> dict[str, Any]:
+    return {
+        "source": "coupang-partners-batch-link-review",
+        "approval_only": True,
+        "publish_executed": False,
+        "summary": dict(summary),
+        "records": records,
+        "failures": failures,
+    }

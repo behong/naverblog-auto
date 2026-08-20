@@ -2,6 +2,7 @@ const collectButton = document.getElementById('collect');
 const inspectButton = document.getElementById('inspect');
 const generateButton = document.getElementById('generate');
 const batchButton = document.getElementById('batch');
+const detailButton = document.getElementById('detail');
 const statusElement = document.getElementById('status');
 
 function setStatus(message) {
@@ -207,6 +208,40 @@ function inspectFirstGoldboxCard() {
   };
 }
 
+function inspectCoupangProductDetail() {
+  const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const parseLastPrice = (value) => {
+    const prices = Array.from(String(value || '').matchAll(/\d{1,3}(?:,\d{3})*\s*원|\d+\s*원/g))
+      .map((match) => Number(match[0].replace(/[^0-9]/g, '')))
+      .filter((price) => price > 0);
+    return prices.length ? prices[prices.length - 1] : null;
+  };
+  const priceBefore = (text, label) => {
+    const index = text.indexOf(label);
+    return index >= 0 ? parseLastPrice(text.slice(Math.max(0, index - 1800), index)) : null;
+  };
+  const text = clean(document.body.innerText);
+  const title = clean(document.querySelector('h1')?.textContent || document.querySelector('meta[property="og:title"]')?.getAttribute('content'));
+  const imageUrl = clean(document.querySelector('meta[property="og:image"]')?.getAttribute('content'));
+  const conditionalLabel = ['와우할인', '쿠폰할인', '회원할인'].find((label) => text.includes(label)) || '';
+  const generalPrice = priceBefore(text, '쿠팡판매가');
+  const conditionalPrice = conditionalLabel ? priceBefore(text, conditionalLabel) : null;
+  const originalImage = imageUrl.startsWith('https://') && imageUrl.includes('coupangcdn.com/') && !imageUrl.includes('/thumbnails/remote/') && !imageUrl.endsWith('.svg');
+  return {
+    source: 'coupang-browser-product-detail',
+    captured_at: new Date().toISOString(),
+    product_page_url: location.href,
+    product_name: title,
+    source_image_url: imageUrl,
+    source_image_verified: originalImage,
+    general_price: generalPrice,
+    lowest_conditional_price: conditionalPrice,
+    conditional_price_condition: conditionalLabel,
+    publish_executed: false,
+    approval_only: true,
+  };
+}
+
 async function generateFirstPartnerLink() {
   const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const image = document.querySelector('img[alt="product"]');
@@ -248,6 +283,28 @@ async function downloadJson(payload, filename) {
     setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   }
 }
+
+detailButton.addEventListener('click', async () => {
+  detailButton.disabled = true;
+  setStatus('현재 쿠팡 상품 상세 화면의 표시 가격과 원본 대표 이미지를 확인하는 중입니다…');
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !String(tab.url || '').startsWith('https://www.coupang.com/vp/products/')) {
+      throw new Error('쿠팡 상품 상세 페이지에서만 사용할 수 있습니다.');
+    }
+    const results = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: inspectCoupangProductDetail });
+    const payload = results[0]?.result;
+    if (!payload?.product_name || !payload?.general_price) {
+      throw new Error('화면에 표시된 상품명 또는 일반 할인가를 확인하지 못했습니다. 페이지가 완전히 로드된 뒤 다시 시도해 주세요.');
+    }
+    await downloadJson(payload, `coupang-product-detail-review-${new Date().toISOString().slice(0, 10)}.json`);
+    setStatus(payload.source_image_verified ? '상세 검증 JSON을 저장했습니다. 네이버 발행은 실행하지 않았습니다.' : '가격은 저장했지만 원본 대표 이미지를 검증하지 못했습니다. 발행하지 않습니다.');
+  } catch (error) {
+    setStatus(`저장하지 않았습니다: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    detailButton.disabled = false;
+  }
+});
 
 batchButton.addEventListener('click', async () => {
   batchButton.disabled = true;

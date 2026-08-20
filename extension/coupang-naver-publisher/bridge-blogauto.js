@@ -1,6 +1,6 @@
-const REQUEST_ATTR = "data-naver-draft-assistant-request";
-const RESPONSE_ATTR = "data-naver-draft-assistant-response";
-const READY_ATTR = "data-naver-draft-assistant-ready";
+const REQUEST_ATTR = "data-coupang-naver-publisher-request";
+const RESPONSE_ATTR = "data-coupang-naver-publisher-response";
+const READY_ATTR = "data-coupang-naver-publisher-ready";
 let lastRequestId = "";
 
 function writeResponse(payload) {
@@ -17,9 +17,9 @@ function setReady() {
 
 async function resumeApprovalPolling() {
   try {
-    await chrome.runtime.sendMessage({ type: "BLOGAUTO_RESUME_APPROVAL_POLL" });
+    await chrome.runtime.sendMessage({ type: "COUPANG_PUBLISHER_RESUME_APPROVAL_POLL" });
   } catch {
-    // 사이트에서의 초안 작성 기능은 승인 폴링 재개 실패와 독립적으로 동작한다.
+    // 승인 폴링 재개 실패는 관리자 화면에서의 페어링과 독립적으로 처리한다.
   }
 }
 
@@ -29,18 +29,16 @@ async function processRequest() {
   try {
     const request = JSON.parse(raw);
     if (!request?.requestId || request.requestId === lastRequestId) return;
-    if (request.type !== "STORE_DRAFT" && request.type !== "PAIR_DEVICE" && request.type !== "GET_APPROVAL_TRACE") return;
+    if (request.type !== "PAIR_COUPANG_PUBLISHER_DEVICE" && request.type !== "GET_COUPANG_PUBLISHER_TRACE") return;
     lastRequestId = request.requestId;
     const response = await chrome.runtime.sendMessage(
-      request.type === "PAIR_DEVICE"
-        ? { type: "BLOGAUTO_PAIR_DEVICE", deviceToken: request.deviceToken }
-        : request.type === "GET_APPROVAL_TRACE"
-          ? { type: "BLOGAUTO_GET_APPROVAL_TRACE" }
-          : { type: "BLOGAUTO_STORE_DRAFT", draft: request.draft },
+      request.type === "PAIR_COUPANG_PUBLISHER_DEVICE"
+        ? { type: "COUPANG_PUBLISHER_PAIR_DEVICE", deviceToken: request.deviceToken }
+        : { type: "COUPANG_PUBLISHER_GET_APPROVAL_TRACE" },
     );
     writeResponse({ requestId: request.requestId, ...response });
   } catch {
-    writeResponse({ requestId: lastRequestId, ok: false, error: "확장 프로그램과 통신하지 못했습니다." });
+    writeResponse({ requestId: lastRequestId, ok: false, error: "쿠팡 발행 확장과 통신하지 못했습니다." });
   }
 }
 

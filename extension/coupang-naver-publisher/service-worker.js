@@ -1573,21 +1573,21 @@ async function autoPublishApprovedNaver(tabId, draft, report) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.target === "offscreen" || message?.type === "CLIPBOARD_PREPARE_IMAGE") return false;
   (async () => {
-    if (message?.type === "BLOGAUTO_GET_APPROVAL_TRACE") {
+    if (message?.type === "COUPANG_PUBLISHER_GET_APPROVAL_TRACE") {
       if (!isBlogAutoSender(sender)) throw new Error("허용되지 않은 확장 프로그램 진단 요청입니다.");
       const stored = await chrome.storage.local.get("coupangNaverPublisherApprovalTrace");
       sendResponse({ ok: true, trace: stored.coupangNaverPublisherApprovalTrace || null });
       return;
     }
 
-    if (message?.type === "BLOGAUTO_RESUME_APPROVAL_POLL") {
+    if (message?.type === "COUPANG_PUBLISHER_RESUME_APPROVAL_POLL") {
       if (!isBlogAutoSender(sender)) throw new Error("허용되지 않은 승인 폴링 재개 요청입니다.");
       startApprovalPolling();
       sendResponse({ ok: true });
       return;
     }
 
-    if (message?.type === "BLOGAUTO_PAIR_DEVICE") {
+    if (message?.type === "COUPANG_PUBLISHER_PAIR_DEVICE") {
       if (!isBlogAutoSender(sender)) throw new Error("허용되지 않은 확장 프로그램 연결 요청입니다.");
       const token = asText(message.deviceToken, 200);
       if (token.length < 24) throw new Error("확장 프로그램 연결 토큰이 올바르지 않습니다.");

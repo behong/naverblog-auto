@@ -1,6 +1,6 @@
-const REQUEST_ATTR = "data-naver-draft-assistant-request";
-const RESPONSE_ATTR = "data-naver-draft-assistant-response";
-const READY_ATTR = "data-naver-draft-assistant-ready";
+const REQUEST_ATTR = "data-coupang-goldbox-collector-request";
+const RESPONSE_ATTR = "data-coupang-goldbox-collector-response";
+const READY_ATTR = "data-coupang-goldbox-collector-ready";
 let lastRequestId = "";
 
 function writeResponse(payload) {
@@ -15,32 +15,18 @@ function setReady() {
   }));
 }
 
-async function resumeApprovalPolling() {
-  try {
-    await chrome.runtime.sendMessage({ type: "BLOGAUTO_RESUME_APPROVAL_POLL" });
-  } catch {
-    // 사이트에서의 초안 작성 기능은 승인 폴링 재개 실패와 독립적으로 동작한다.
-  }
-}
-
 async function processRequest() {
   const raw = document.documentElement.getAttribute(REQUEST_ATTR);
   if (!raw) return;
   try {
     const request = JSON.parse(raw);
     if (!request?.requestId || request.requestId === lastRequestId) return;
-    if (request.type !== "STORE_DRAFT" && request.type !== "PAIR_DEVICE" && request.type !== "GET_APPROVAL_TRACE") return;
+    if (request.type !== "PAIR_COUPANG_COLLECTOR_DEVICE") return;
     lastRequestId = request.requestId;
-    const response = await chrome.runtime.sendMessage(
-      request.type === "PAIR_DEVICE"
-        ? { type: "BLOGAUTO_PAIR_DEVICE", deviceToken: request.deviceToken }
-        : request.type === "GET_APPROVAL_TRACE"
-          ? { type: "BLOGAUTO_GET_APPROVAL_TRACE" }
-          : { type: "BLOGAUTO_STORE_DRAFT", draft: request.draft },
-    );
+    const response = await chrome.runtime.sendMessage({ type: "COUPANG_COLLECTOR_PAIR_DEVICE", deviceToken: request.deviceToken });
     writeResponse({ requestId: request.requestId, ...response });
   } catch {
-    writeResponse({ requestId: lastRequestId, ok: false, error: "확장 프로그램과 통신하지 못했습니다." });
+    writeResponse({ requestId: lastRequestId, ok: false, error: "쿠팡 수집기와 통신하지 못했습니다." });
   }
 }
 
@@ -51,5 +37,4 @@ new MutationObserver((records) => {
 }).observe(document.documentElement, { attributes: true, attributeFilter: [REQUEST_ATTR] });
 
 setReady();
-resumeApprovalPolling();
 processRequest();

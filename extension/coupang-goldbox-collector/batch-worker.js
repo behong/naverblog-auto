@@ -181,7 +181,7 @@ async function runBatch(tabId) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === 'BLOGAUTO_PAIR_DEVICE') {
+  if (message?.type === 'COUPANG_COLLECTOR_PAIR_DEVICE') {
     (async () => {
       try {
         const origin = new URL(sender.url || sender.tab?.url || '').origin;

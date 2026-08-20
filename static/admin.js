@@ -15,6 +15,9 @@
   const collectionStatus = document.querySelector("#collectionStatus");
   const productRows = document.querySelector("#productRows");
   const productCount = document.querySelector("#productCount");
+  const pairCoupangCollector = document.querySelector("#pairCoupangCollector");
+  const pairCoupangPublisher = document.querySelector("#pairCoupangPublisher");
+  const coupangConnectionStatus = document.querySelector("#coupangConnectionStatus");
 
   let csrfToken = "";
 
@@ -28,6 +31,8 @@
     collectProducts.disabled = busy;
     logout.disabled = busy;
     publisherForm.querySelector("button[type=submit]").disabled = busy;
+    pairCoupangCollector.disabled = busy;
+    pairCoupangPublisher.disabled = busy;
     productRows.querySelectorAll("button[data-issue-id], button[data-copy-url], button[data-prepare-draft]").forEach((button) => {
       button.disabled = busy;
     });
@@ -159,16 +164,20 @@
 
   const EXTENSION_REQUEST_ATTR = "data-naver-draft-assistant-request";
   const EXTENSION_RESPONSE_ATTR = "data-naver-draft-assistant-response";
+  const COUPANG_COLLECTOR_REQUEST_ATTR = "data-coupang-goldbox-collector-request";
+  const COUPANG_COLLECTOR_RESPONSE_ATTR = "data-coupang-goldbox-collector-response";
+  const COUPANG_PUBLISHER_REQUEST_ATTR = "data-coupang-naver-publisher-request";
+  const COUPANG_PUBLISHER_RESPONSE_ATTR = "data-coupang-naver-publisher-response";
 
-  const requestExtension = (request) => new Promise((resolve) => {
+  const requestExtensionAt = (request, requestAttr, responseAttr, name) => new Promise((resolve) => {
     const requestId = crypto.randomUUID();
     const timeout = setTimeout(() => {
       observer.disconnect();
-      resolve({ ok: false, error: "확장 프로그램이 응답하지 않았습니다. 확장 프로그램과 이 페이지를 새로고침해 주세요." });
+      resolve({ ok: false, error: `${name}이(가) 응답하지 않았습니다. 확장 프로그램과 이 페이지를 새로고침해 주세요.` });
     }, 3000);
     const observer = new MutationObserver(() => {
       try {
-        const response = JSON.parse(document.documentElement.getAttribute(EXTENSION_RESPONSE_ATTR) || "{}");
+        const response = JSON.parse(document.documentElement.getAttribute(responseAttr) || "{}");
         if (response.requestId !== requestId) return;
         clearTimeout(timeout);
         observer.disconnect();
@@ -177,9 +186,13 @@
         // Wait for a complete extension response.
       }
     });
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: [EXTENSION_RESPONSE_ATTR] });
-    document.documentElement.setAttribute(EXTENSION_REQUEST_ATTR, JSON.stringify({ ...request, requestId }));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: [responseAttr] });
+    document.documentElement.setAttribute(requestAttr, JSON.stringify({ ...request, requestId }));
   });
+
+  const requestExtension = (request) => requestExtensionAt(request, EXTENSION_REQUEST_ATTR, EXTENSION_RESPONSE_ATTR, "토스 발행 확장");
+  const requestCoupangCollector = (request) => requestExtensionAt(request, COUPANG_COLLECTOR_REQUEST_ATTR, COUPANG_COLLECTOR_RESPONSE_ATTR, "쿠팡 수집기");
+  const requestCoupangPublisher = (request) => requestExtensionAt(request, COUPANG_PUBLISHER_REQUEST_ATTR, COUPANG_PUBLISHER_RESPONSE_ATTR, "쿠팡 발행 확장");
 
   const storeDraftInExtension = (draft) => requestExtension({ type: "STORE_DRAFT", draft });
 
@@ -187,6 +200,18 @@
     const result = await api("/api/admin/extension/pair", { method: "POST", body: "{}" });
     const response = await requestExtension({ type: "PAIR_DEVICE", deviceToken: result.device_token || "" });
     if (!response.ok) throw new Error(response.error || "확장 프로그램 연결에 실패했습니다.");
+  };
+
+  const pairCoupangCollectorDevice = async () => {
+    const result = await api("/api/admin/extension/pair", { method: "POST", body: "{}" });
+    const response = await requestCoupangCollector({ type: "PAIR_COUPANG_COLLECTOR_DEVICE", deviceToken: result.device_token || "" });
+    if (!response.ok) throw new Error(response.error || "쿠팡 수집기 연결에 실패했습니다.");
+  };
+
+  const pairCoupangPublisherDevice = async () => {
+    const result = await api("/api/admin/extension/pair", { method: "POST", body: "{}" });
+    const response = await requestCoupangPublisher({ type: "PAIR_COUPANG_PUBLISHER_DEVICE", deviceToken: result.device_token || "" });
+    if (!response.ok) throw new Error(response.error || "쿠팡 발행 확장 연결에 실패했습니다.");
   };
 
   const showApprovalDispatchTrace = async () => {
@@ -411,6 +436,32 @@
       target.disabled = false;
       target.textContent = "링크 발급";
       setStatus(collectionStatus, error.message || "쉐어링크를 발급하지 못했습니다.", "error");
+    }
+  });
+
+  pairCoupangCollector.addEventListener("click", async () => {
+    setBusy(true);
+    setStatus(coupangConnectionStatus, "쿠팡 골드박스 수집기를 연결하는 중입니다.");
+    try {
+      await pairCoupangCollectorDevice();
+      setStatus(coupangConnectionStatus, "쿠팡 골드박스 수집기가 연결됐습니다. 검증된 상품만 텔레그램 승인 요청으로 보낼 수 있습니다.", "success");
+    } catch (error) {
+      setStatus(coupangConnectionStatus, error.message || "쿠팡 수집기 연결에 실패했습니다.", "error");
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  pairCoupangPublisher.addEventListener("click", async () => {
+    setBusy(true);
+    setStatus(coupangConnectionStatus, "쿠팡 네이버 발행 확장을 연결하는 중입니다.");
+    try {
+      await pairCoupangPublisherDevice();
+      setStatus(coupangConnectionStatus, "쿠팡 네이버 발행 확장이 연결됐습니다. 텔레그램 승인 후 카테고리 42 등록을 준비합니다.", "success");
+    } catch (error) {
+      setStatus(coupangConnectionStatus, error.message || "쿠팡 발행 확장 연결에 실패했습니다.", "error");
+    } finally {
+      setBusy(false);
     }
   });
 

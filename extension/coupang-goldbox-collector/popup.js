@@ -229,17 +229,21 @@ function inspectCoupangProductDetail() {
   ].map(clean).filter(Boolean);
   const title = titleCandidates.find((value) => value.length > 2 && !/^쿠팡$/i.test(value)) || '';
   const imageUrl = clean(document.querySelector('meta[property="og:image"]')?.getAttribute('content'));
-  const wowPrice = priceBefore(text, '와우할인');
-  const couponPrice = priceBefore(text, '쿠폰할인');
-  const memberPrice = priceBefore(text, '회원할인');
   const generalPrice = priceBefore(text, '쿠팡판매가');
-  const personalCouponIndicators = ['내 쿠폰', '쿠폰 적용', '쿠폰 받기', '보유 쿠폰', '쿠폰가', '개인 쿠폰', '할인쿠폰'];
-  const personalCouponDetected = personalCouponIndicators.some((label) => text.includes(label));
+  const couponIndicators = ['쿠폰할인', '쿠폰받기', '쿠폰 받기', '쿠폰 적용', '쿠폰 적용됨', '보유 쿠폰', '쿠폰가', '개인 쿠폰', '할인쿠폰', '웰컴백 쿠폰'];
+  const wowIndicators = ['와우할인', '와우 가입 시', '와우 멤버십'];
+  const couponDetected = couponIndicators.some((label) => text.includes(label));
+  const wowConditionDetected = wowIndicators.some((label) => text.includes(label));
+  const personalCouponDetected = couponIndicators.some((label) => ['쿠폰받기', '쿠폰 받기', '쿠폰 적용', '쿠폰 적용됨', '보유 쿠폰', '쿠폰가', '개인 쿠폰', '할인쿠폰', '웰컴백 쿠폰'].includes(label) && text.includes(label));
   const originalImage = imageUrl.startsWith('https://') && imageUrl.includes('coupangcdn.com/') && !imageUrl.includes('/thumbnails/remote/') && !imageUrl.endsWith('.svg');
-  const labelContext = (label) => {
-    const index = text.indexOf(label);
-    return index >= 0 ? text.slice(Math.max(0, index - 240), Math.min(text.length, index + 100)) : '';
-  };
+  const automaticPublishEligible = Boolean(title && generalPrice && originalImage && !couponDetected && !wowConditionDetected);
+  const exclusionReasons = [
+    !title ? 'product_name_missing' : '',
+    !generalPrice ? 'general_price_unverified' : '',
+    !originalImage ? 'source_image_unverified' : '',
+    couponDetected ? 'coupon_or_personal_coupon_detected' : '',
+    wowConditionDetected ? 'wow_or_member_condition_detected' : '',
+  ].filter(Boolean);
   return {
     source: 'coupang-browser-product-detail',
     captured_at: new Date().toISOString(),
@@ -248,24 +252,26 @@ function inspectCoupangProductDetail() {
     source_image_url: imageUrl,
     source_image_verified: originalImage,
     general_price: generalPrice,
-    // Coupon prices, including personal coupons, are never used for automated publishing.
-    lowest_conditional_price: personalCouponDetected ? null : wowPrice,
-    conditional_price_condition: personalCouponDetected ? '' : (wowPrice ? '와우할인' : ''),
-    coupon_price_detected: couponPrice,
-    member_price_detected: memberPrice,
+    // Coupon and membership prices are never used for automated publishing.
+    lowest_conditional_price: null,
+    conditional_price_condition: '',
+    coupon_price_detected: couponDetected,
+    member_price_detected: wowConditionDetected,
     personal_coupon_detected: personalCouponDetected,
-    coupon_price_excluded: Boolean(couponPrice || personalCouponDetected),
+    coupon_price_excluded: couponDetected,
+    automatic_publish_eligible: automaticPublishEligible,
+    automatic_publish_exclusion_reasons: exclusionReasons,
     publish_executed: false,
     approval_only: true,
     diagnostic: {
       title_candidates: titleCandidates.slice(0, 4),
-      label_context: {
-        coupon_sale: labelContext('쿠팡판매가'),
-        wow_discount: labelContext('와우할인'),
-        coupon_discount: labelContext('쿠폰할인'),
-        member_discount: labelContext('회원할인'),
+      detected_conditions: {
+        coupon: couponDetected,
+        wow_or_member: wowConditionDetected,
+        personal_coupon: personalCouponDetected,
       },
-      text_sample: text.slice(0, 1400),
+      general_price_label_present: text.includes('쿠팡판매가'),
+      image_is_thumbnail: imageUrl.includes('/thumbnails/remote/'),
     },
   };
 }
@@ -323,14 +329,12 @@ detailButton.addEventListener('click', async () => {
     const results = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: inspectCoupangProductDetail });
     const payload = results[0]?.result;
     await downloadJson(payload, `coupang-product-detail-review-${new Date().toISOString().slice(0, 10)}.json`);
-    if (!payload?.product_name || !payload?.general_price) {
-      setStatus('상세 진단 JSON을 저장했습니다. 제목 또는 일반 가격 탐지 규칙을 보완하겠습니다. 발행하지 않습니다.');
-    } else if (payload.personal_coupon_detected || payload.coupon_price_excluded) {
-      setStatus('쿠폰 가격은 자동 제외하고 상세 검증 JSON만 저장했습니다. 네이버 발행은 실행하지 않았습니다.');
-    } else if (payload.source_image_verified) {
-      setStatus('상세 검증 JSON을 저장했습니다. 네이버 발행은 실행하지 않았습니다.');
+    if (payload?.automatic_publish_eligible) {
+      setStatus('일반 가격·원본 대표 이미지·가격 조건을 검증했습니다. 현재는 검토 JSON만 저장하며 네이버 발행은 실행하지 않습니다.');
+    } else if (payload?.coupon_price_excluded || payload?.member_price_detected) {
+      setStatus('쿠폰·와우·회원 조건 가격이 감지되어 자동 발행 후보에서 제외했습니다. 상세 검증 JSON만 저장했습니다.');
     } else {
-      setStatus('가격은 저장했지만 원본 대표 이미지를 검증하지 못했습니다. 발행하지 않습니다.');
+      setStatus('필수 검증 조건을 충족하지 않아 자동 발행 후보에서 제외했습니다. 상세 진단 JSON만 저장했습니다.');
     }
   } catch (error) {
     setStatus(`저장하지 않았습니다: ${error instanceof Error ? error.message : String(error)}`);

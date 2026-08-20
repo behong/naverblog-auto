@@ -1,5 +1,6 @@
 const collectButton = document.getElementById('collect');
 const inspectButton = document.getElementById('inspect');
+const generateButton = document.getElementById('generate');
 const statusElement = document.getElementById('status');
 
 function setStatus(message) {
@@ -205,6 +206,38 @@ function inspectFirstGoldboxCard() {
   };
 }
 
+async function generateFirstPartnerLink() {
+  const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const image = document.querySelector('img[alt="product"]');
+  const card = image?.parentElement?.parentElement || image?.parentElement;
+  const button = card?.querySelector('button.btn-generate-link') || Array.from(card?.querySelectorAll('button') || [])
+    .find((node) => clean(node.textContent) === '링크 생성');
+  if (!card || !button) {
+    return { ok: false, reason: 'generate_link_button_not_found', page_url: location.href };
+  }
+  const candidate = {
+    product_name: clean(card.textContent).replace(/^\d+\s*상품정보\s*링크\s*생성\s*/, '').slice(0, 400),
+    preview_image_url: image.currentSrc || image.src || '',
+  };
+  button.click();
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  const bodyText = clean(document.body.innerText);
+  const generatedUrls = (bodyText.match(/https:\/\/(?:link\.coupang\.com|coupa\.ng)\/[A-Za-z0-9_?=&%#./-]+/g) || [])
+    .map((url) => url.replace(/[),.]+$/, ''));
+  const dialogs = Array.from(document.querySelectorAll('[role="dialog"], .ant-modal, .modal, [class*="modal"]'))
+    .filter((node) => clean(node.textContent))
+    .map((node) => clean(node.textContent).slice(0, 1200))
+    .slice(0, 3);
+  return {
+    ok: true,
+    page_url: location.href,
+    candidate,
+    generated_urls: [...new Set(generatedUrls)],
+    dialog_text: dialogs,
+    link_detected: generatedUrls.length > 0,
+  };
+}
+
 async function downloadJson(payload, filename) {
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const objectUrl = URL.createObjectURL(blob);
@@ -214,6 +247,32 @@ async function downloadJson(payload, filename) {
     setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   }
 }
+
+generateButton.addEventListener('click', async () => {
+  generateButton.disabled = true;
+  setStatus('첫 후보의 쿠팡 파트너스 링크를 생성하고 결과만 저장하는 중입니다…');
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !String(tab.url || '').startsWith('https://partners.coupang.com/')) {
+      throw new Error('쿠팡 파트너스 골드박스 탭에서만 사용할 수 있습니다.');
+    }
+    const results = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: generateFirstPartnerLink });
+    const payload = {
+      source: 'coupang-partners-goldbox-link-generation',
+      captured_at: new Date().toISOString(),
+      page_url: tab.url,
+      publish_executed: false,
+      frames: results.map((result) => ({ frame_id: result.frameId, result: result.result || {} })),
+    };
+    await downloadJson(payload, `coupang-goldbox-link-result-${new Date().toISOString().slice(0, 10)}.json`);
+    const succeeded = results.some((result) => result.result?.link_detected);
+    setStatus(succeeded ? '제휴 링크 결과 JSON을 저장했습니다. 네이버 발행은 실행하지 않았습니다.' : '링크 생성 결과 진단 JSON을 저장했습니다. 링크가 표시되는 위치를 확인하겠습니다.');
+  } catch (error) {
+    setStatus(`저장하지 않았습니다: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    generateButton.disabled = false;
+  }
+});
 
 inspectButton.addEventListener('click', async () => {
   inspectButton.disabled = true;

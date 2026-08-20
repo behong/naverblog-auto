@@ -62,6 +62,44 @@ function scrapeGoldboxCandidates() {
   );
   const seen = new Set();
   const candidates = [];
+  const previewId = (value) => {
+    let hash = 2166136261;
+    for (const character of String(value)) {
+      hash ^= character.charCodeAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `goldbox-preview-${(hash >>> 0).toString(16)}`;
+  };
+  const productPriceValues = (text) => (clean(text).match(/\d{1,3}(?:,\d{3})+\s*원|\d+\s*원/g) || [])
+    .map((value) => Number(value.replace(/[^0-9]/g, '')))
+    .filter((value) => Number.isFinite(value) && value > 0);
+
+  // Goldbox cards use image elements and a nearby '상품정보 / 링크 생성' control instead of product anchors.
+  for (const imageElement of document.querySelectorAll('img[alt="product"]')) {
+    const card = cardFor(imageElement);
+    const text = clean(card.textContent);
+    const imageUrl = absolute(attribute(imageElement, ['src', 'data-src', 'data-original', 'data-lazy-src']));
+    const titleMatch = text.match(/링크\s*생성\s*(.+?)\s*(?:\d{1,3}%\s*)?\d{1,3}(?:,\d{3})+\s*원/i);
+    const productName = clean(titleMatch ? titleMatch[1] : '');
+    const prices = productPriceValues(text);
+    if (!productName || !imageUrl || !prices.length) continue;
+    const candidateId = previewId(`${productName}|${imageUrl}`);
+    if (seen.has(candidateId)) continue;
+    seen.add(candidateId);
+    candidates.push({
+      candidate_id: candidateId,
+      product_id: '',
+      product_name: productName,
+      product_url: '',
+      preview_image_url: imageUrl,
+      displayed_normal_price: prices[0],
+      displayed_sale_price: prices[prices.length - 1],
+      source_image_verified: false,
+      requires_product_detail_verification: true,
+      requires_partner_link_generation: true,
+    });
+  }
+
   for (const element of sourceElements) {
     const card = cardFor(element);
     const link = element.closest('a[href]') || card.querySelector('a[href]');
@@ -153,8 +191,9 @@ collectButton.addEventListener('click', async () => {
         sample_images: Array.isArray(payload.sample_images) ? payload.sample_images : [],
       });
       for (const candidate of Array.isArray(payload.candidates) ? payload.candidates : []) {
-        if (candidate?.product_id && !seen.has(candidate.product_id)) {
-          seen.add(candidate.product_id);
+        const identity = String(candidate?.product_id || candidate?.candidate_id || '');
+        if (identity && !seen.has(identity)) {
+          seen.add(identity);
           candidates.push(candidate);
         }
       }

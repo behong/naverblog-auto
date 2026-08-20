@@ -49,6 +49,14 @@ function scrapeGoldboxCandidates() {
     }
     return { url: '', alt: '' };
   };
+  const diagnosticUrl = (value) => {
+    try {
+      const parsed = new URL(value, location.href);
+      return `${parsed.origin}${parsed.pathname}`;
+    } catch (_) {
+      return '';
+    }
+  };
   const sourceElements = document.querySelectorAll(
     'a[href], [data-product-id], [data-productid], [data-item-id], [data-itemid], [data-product-url]'
   );
@@ -81,6 +89,21 @@ function scrapeGoldboxCandidates() {
       source_image_verified: false,
     });
   }
+  const sampleAnchors = Array.from(document.querySelectorAll('a[href]')).slice(0, 30).map((anchor) => ({
+    href: diagnosticUrl(anchor.getAttribute('href')),
+    text: clean(anchor.textContent).slice(0, 180),
+    title: clean(anchor.getAttribute('title') || anchor.getAttribute('aria-label')).slice(0, 180),
+    class_name: clean(anchor.className).slice(0, 180),
+  }));
+  const sampleImages = Array.from(document.querySelectorAll('img')).slice(0, 45).map((image) => {
+    const parent = image.parentElement;
+    return {
+      src: diagnosticUrl(attribute(image, ['src', 'data-src', 'data-original', 'data-lazy-src'])),
+      alt: clean(image.getAttribute('alt')).slice(0, 180),
+      parent_class: clean(parent?.className).slice(0, 180),
+      nearby_text: clean(parent?.parentElement?.textContent).slice(0, 240),
+    };
+  });
   return {
     frame_url: location.href,
     diagnostics: {
@@ -89,6 +112,8 @@ function scrapeGoldboxCandidates() {
       images: document.querySelectorAll('img').length,
       iframes: document.querySelectorAll('iframe').length,
     },
+    sample_anchors: sampleAnchors,
+    sample_images: sampleImages,
     candidates,
   };
 }

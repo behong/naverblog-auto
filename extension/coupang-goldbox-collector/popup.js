@@ -73,16 +73,37 @@ function scrapeGoldboxCandidates() {
   const productPriceValues = (text) => (clean(text).match(/\d{1,3}(?:,\d{3})+\s*원|\d+\s*원/g) || [])
     .map((value) => Number(value.replace(/[^0-9]/g, '')))
     .filter((value) => Number.isFinite(value) && value > 0);
+  const previewDiagnostics = { product_images_seen: 0, missing_text: 0, missing_title: 0, missing_price: 0, missing_image: 0 };
 
   // Goldbox cards use image elements and a nearby '상품정보 / 링크 생성' control instead of product anchors.
   for (const imageElement of document.querySelectorAll('img[alt="product"]')) {
-    const card = cardFor(imageElement);
-    const text = clean(card.textContent);
+    previewDiagnostics.product_images_seen += 1;
+    // The actual card text is on the grandparent of .product-picture in the Goldbox page.
+    const card = imageElement.parentElement?.parentElement || cardFor(imageElement);
+    const text = clean(card?.textContent);
     const imageUrl = absolute(attribute(imageElement, ['src', 'data-src', 'data-original', 'data-lazy-src']));
-    const titleMatch = text.match(/링크\s*생성\s*(.+?)\s*(?:\d{1,3}%\s*)?\d{1,3}(?:,\d{3})+\s*원/i);
-    const productName = clean(titleMatch ? titleMatch[1] : '');
-    const prices = productPriceValues(text);
-    if (!productName || !imageUrl || !prices.length) continue;
+    if (!text) {
+      previewDiagnostics.missing_text += 1;
+      continue;
+    }
+    const marker = text.indexOf('링크 생성');
+    const detailText = marker >= 0 ? text.slice(marker + '링크 생성'.length) : text;
+    const priceMatches = Array.from(detailText.matchAll(/\d{1,3}(?:,\d{3})+\s*원|\d+\s*원/g));
+    const firstPrice = priceMatches[0];
+    const productName = clean(firstPrice ? detailText.slice(0, firstPrice.index).replace(/\d{1,3}%\s*$/, '') : '');
+    const prices = productPriceValues(detailText);
+    if (!productName) {
+      previewDiagnostics.missing_title += 1;
+      continue;
+    }
+    if (!prices.length) {
+      previewDiagnostics.missing_price += 1;
+      continue;
+    }
+    if (!imageUrl) {
+      previewDiagnostics.missing_image += 1;
+      continue;
+    }
     const candidateId = previewId(`${productName}|${imageUrl}`);
     if (seen.has(candidateId)) continue;
     seen.add(candidateId);
@@ -149,6 +170,7 @@ function scrapeGoldboxCandidates() {
       product_attributes: document.querySelectorAll('[data-product-id], [data-productid], [data-item-id], [data-itemid], [data-product-url]').length,
       images: document.querySelectorAll('img').length,
       iframes: document.querySelectorAll('iframe').length,
+      goldbox_preview: previewDiagnostics,
     },
     sample_anchors: sampleAnchors,
     sample_images: sampleImages,

@@ -742,6 +742,19 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/coupang/collector/approval":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                payload = self._read_json()
+                candidate = payload.get("candidate") if isinstance(payload.get("candidate"), dict) else {}
+                result = request_coupang_publication_approval(candidate, int(payload.get("ttl_minutes") or 30))
+                self._send_json({"ok": True, "result": result})
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         if parsed.path == "/api/coupang/extension/publish/begin":
             device_token = self.headers.get("X-Naver-Draft-Device", "")
             if not extension_device_valid(device_token):

@@ -3,7 +3,9 @@ const inspectButton = document.getElementById('inspect');
 const generateButton = document.getElementById('generate');
 const batchButton = document.getElementById('batch');
 const detailButton = document.getElementById('detail');
+const approvalButton = document.getElementById('approval');
 const statusElement = document.getElementById('status');
+const BLOGAUTO_ORIGIN = 'https://blogauto.hongzi.us';
 
 function setStatus(message) {
   statusElement.textContent = message;
@@ -224,6 +226,15 @@ function inspectCoupangProductDetail() {
     }))
     .filter((entry) => entry.value > 0 && !entry.unit_price);
   const text = clean(document.body.innerText);
+  const productId = new URL(location.href).pathname.match(/\/vp\/products\/(\d+)/)?.[1] || '';
+  const factLabels = ['소비기한\\(또는 유통기한\\)', '보관방법', '개당 중량', '부위', '절단 형태', '원산지', '식품의 유형', '제조년월일', '크기', '색상', '재질'];
+  const labelPattern = factLabels.join('|');
+  const productFacts = factLabels.map((label) => {
+    const match = text.match(new RegExp(`(${label}):\\s*(.+?)(?=\\s+(?:${labelPattern}):|\\s+쿠팡상품번호:|$)`, 'i'));
+    return match ? `${match[1].replace(/\\\\/g, '')}: ${clean(match[2]).slice(0, 120)}` : '';
+  }).filter(Boolean).slice(0, 4);
+  const compositionMatch = text.match(/중량\\s*×\\s*수량:\\s*(.+?)(?=\\s+(?:적립|쿠팡캐시|쿠페이|수량빼기|소비기한|보관방법|개당 중량|쿠팡상품번호):|$)/);
+  const composition = clean(compositionMatch?.[1] || '');
   const titleCandidates = [
     document.querySelector('.prod-buy-header__title')?.textContent,
     document.querySelector('h1')?.textContent,
@@ -262,18 +273,37 @@ function inspectCoupangProductDetail() {
     thumbnailOriginalCandidate,
   ].filter((url, index, values) => url.startsWith('https://') && values.indexOf(url) === index && !url.endsWith('.svg'));
   const sourceImageCandidate = imageCandidates.find((url) => url.includes('coupangcdn.com/') && !url.includes('/thumbnails/remote/')) || '';
-  const automaticPublishEligible = Boolean(title && normalPrice && generalSalePrice && sourceImageCandidate);
+  const description = productFacts.length >= 2 && composition
+    ? `${productFacts.slice(0, 2).join(', ')} 정보를 확인한 ${composition} 구성 상품입니다.`
+    : '';
+  const features = productFacts.slice(0, 3);
+  const audiences = title && composition ? [
+    `${title} 구성을 찾는 분`,
+    `${composition} 상품이 필요한 분`,
+    '쿠폰·회원 혜택 조건을 확인할 수 있는 분',
+  ] : [];
+  const automaticPublishEligible = Boolean(title && productId && composition && normalPrice && generalSalePrice && lowestConditional?.price && sourceImageCandidate && description && features.length >= 3 && audiences.length >= 3);
   const exclusionReasons = [
     !title ? 'product_name_missing' : '',
+    !productId ? 'product_id_missing' : '',
+    !composition ? 'composition_unverified' : '',
+    !description ? 'product_facts_unverified' : '',
+    features.length < 3 ? 'insufficient_product_features' : '',
     !normalPrice ? 'normal_price_unverified' : '',
     !generalSalePrice ? 'general_sale_price_unverified' : '',
+    !lowestConditional?.price ? 'conditional_price_unverified' : '',
     !sourceImageCandidate ? 'source_image_unverified' : '',
   ].filter(Boolean);
   return {
     source: 'coupang-browser-product-detail',
     captured_at: new Date().toISOString(),
     product_page_url: location.href,
+    product_id: productId,
     product_name: title,
+    composition,
+    description,
+    features,
+    audiences,
     source_image_url: sourceImageCandidate || ogImage,
     source_image_candidate_url: sourceImageCandidate,
     source_image_verified: false,
@@ -294,6 +324,7 @@ function inspectCoupangProductDetail() {
       title_candidates: titleCandidates.slice(0, 4),
       detected_conditions: { coupon: couponDetected, wow_or_member: wowConditionDetected, personal_coupon: personalCouponDetected },
       price_scope_sample: priceScope.slice(0, 700),
+      product_facts_found: productFacts.length,
       source_image_candidate_found: Boolean(sourceImageCandidate),
       og_image_is_thumbnail: ogImage.includes('/thumbnails/remote/'),
     },
@@ -361,6 +392,33 @@ async function verifySourceImage(payload) {
   }
 }
 
+async function storedPartnerLink(productId) {
+  const stored = await chrome.storage.local.get('coupangGoldboxPartnerLinkResults');
+  const results = Array.isArray(stored.coupangGoldboxPartnerLinkResults) ? stored.coupangGoldboxPartnerLinkResults : [];
+  const matched = results.find((item) => String(item?.product_id || '') === String(productId || ''));
+  const urls = Array.isArray(matched?.generated_urls) ? matched.generated_urls : [];
+  return urls.find((url) => /^https:\/\/(?:coupa\.ng|link\.coupang\.com)\//i.test(String(url || ''))) || '';
+}
+
+function approvalCandidate(detail, affiliateUrl) {
+  return {
+    product_id: detail.product_id,
+    product_name: detail.product_name,
+    composition: detail.composition,
+    product_url: detail.product_page_url,
+    affiliate_url: affiliateUrl,
+    original_image_url: detail.source_image_url,
+    normal_price: detail.normal_price,
+    sale_price: detail.general_price,
+    conditional_price: detail.lowest_conditional_price,
+    price_condition: detail.conditional_price_condition,
+    description: detail.description,
+    features: detail.features,
+    audiences: detail.audiences,
+    source_image_verified: detail.source_image_verified === true,
+  };
+}
+
 async function downloadJson(payload, filename) {
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const objectUrl = URL.createObjectURL(blob);
@@ -381,17 +439,54 @@ detailButton.addEventListener('click', async () => {
     }
     const results = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: inspectCoupangProductDetail });
     const detailPayload = results[0]?.result;
-    const payload = await verifySourceImage(detailPayload);
+    const verifiedDetail = await verifySourceImage(detailPayload);
+    const affiliateUrl = await storedPartnerLink(verifiedDetail?.product_id);
+    const payload = {
+      ...verifiedDetail,
+      affiliate_url: affiliateUrl,
+      approval_ready: Boolean(verifiedDetail?.automatic_publish_eligible && affiliateUrl),
+      approval_exclusion_reasons: [
+        ...(verifiedDetail?.automatic_publish_exclusion_reasons || []),
+        !affiliateUrl ? 'partner_link_unverified' : '',
+      ].filter(Boolean),
+    };
+    await chrome.storage.local.set({ coupangGoldboxLastVerifiedDetail: payload, coupangGoldboxLastVerifiedDetailUpdatedAt: Date.now() });
     await downloadJson(payload, `coupang-product-detail-review-${new Date().toISOString().slice(0, 10)}.json`);
-    if (payload?.automatic_publish_eligible) {
-      setStatus('일반 가격·최저 조건부 가격·원본 대표 이미지를 검증했습니다. 현재는 검토 JSON만 저장하며 네이버 발행은 실행하지 않습니다.');
+    if (payload.approval_ready) {
+      setStatus('일반 가격·최저 조건부 가격·원본 대표 이미지·파트너스 링크를 검증했습니다. 아래 버튼으로 텔레그램 승인 요청을 만들 수 있습니다.');
     } else {
-      setStatus('가격 또는 원본 대표 이미지를 검증하지 못해 자동 발행 후보로 저장하지 않았습니다. 상세 진단 JSON만 저장했습니다.');
+      setStatus('가격·원본 대표 이미지·상품 사실·파트너스 링크 중 하나 이상을 검증하지 못해 승인 요청을 만들지 않았습니다. 상세 진단 JSON만 저장했습니다.');
     }
   } catch (error) {
     setStatus(`저장하지 않았습니다: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     detailButton.disabled = false;
+  }
+});
+
+approvalButton.addEventListener('click', async () => {
+  approvalButton.disabled = true;
+  setStatus('검증된 쿠팡 상품의 텔레그램 승인 요청을 만드는 중입니다…');
+  try {
+    const stored = await chrome.storage.local.get(['coupangCollectorDeviceToken', 'coupangGoldboxLastVerifiedDetail']);
+    const deviceToken = String(stored.coupangCollectorDeviceToken || '').trim();
+    const detail = stored.coupangGoldboxLastVerifiedDetail;
+    if (deviceToken.length < 24) throw new Error('쿠팡 수집기 연결 정보가 없습니다. 관리자 페이지에서 이 수집기를 한 번 연결해 주세요.');
+    if (!detail?.approval_ready || !detail?.affiliate_url) throw new Error('현재 상세 검증 결과는 승인 요청 조건을 충족하지 않습니다. 상세 검증을 다시 실행해 주세요.');
+    const response = await fetch(`${BLOGAUTO_ORIGIN}/api/coupang/collector/approval`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Naver-Draft-Device': deviceToken },
+      body: JSON.stringify({ candidate: approvalCandidate(detail, detail.affiliate_url), ttl_minutes: 30 }),
+      cache: 'no-store',
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || !body?.ok) throw new Error(body?.error || '텔레그램 승인 요청을 만들지 못했습니다.');
+    await chrome.storage.local.remove('coupangGoldboxLastVerifiedDetail');
+    setStatus('텔레그램 승인 요청을 보냈습니다. 승인 전에는 네이버 발행을 실행하지 않습니다.');
+  } catch (error) {
+    setStatus(`승인 요청을 만들지 않았습니다: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    approvalButton.disabled = false;
   }
 });
 

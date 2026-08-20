@@ -167,6 +167,10 @@ async function runBatch(tabId) {
     approval_only: true,
     results,
   };
+  await chrome.storage.local.set({
+    coupangGoldboxPartnerLinkResults: results,
+    coupangGoldboxPartnerLinkResultsUpdatedAt: Date.now(),
+  });
   await chrome.downloads.download({
     url: encodeDataUrl(payload),
     filename: `coupang-goldbox-batch-link-results-${new Date().toISOString().slice(0, 10)}.json`,
@@ -177,6 +181,20 @@ async function runBatch(tabId) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'BLOGAUTO_PAIR_DEVICE') {
+    (async () => {
+      try {
+        const origin = new URL(sender.url || sender.tab?.url || '').origin;
+        const token = String(message.deviceToken || '').trim();
+        if (origin !== 'https://blogauto.hongzi.us' || token.length < 24) throw new Error('쿠팡 수집기 연결 요청이 올바르지 않습니다.');
+        await chrome.storage.local.set({ coupangCollectorDeviceToken: token, coupangCollectorPairTabId: sender.tab?.id || null });
+        sendResponse({ ok: true });
+      } catch (error) {
+        sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+    return true;
+  }
   if (message?.type !== 'START_GOLDBOX_LINK_BATCH') return undefined;
   runBatch(message.tabId)
     .then((summary) => sendResponse({ ok: true, summary }))

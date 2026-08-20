@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <title>원본 이미지 준비</title>
+    <style>
+      body{margin:0;background:#f8fafc;font-family:system-ui,sans-serif;color:#0f172a}
+      main{max-width:520px;margin:72px auto;padding:32px;background:#fff;border:1px solid #cbd5e1}
+      h1{font-size:22px;margin:0 0 14px}
+      p{line-height:1.65;color:#475569}
+      button{margin-top:12px;padding:13px 18px;border:0;background:#1d4ed8;color:#fff;font-size:16px;font-weight:700;cursor:pointer}
+      button:disabled{background:#94a3b8;cursor:wait}
+      #status{min-height:24px;margin-top:16px;font-size:14px;color:#475569}
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>원본 이미지 준비</h1>
+      <p>네이버 글에 넣을 원본 상품 이미지를 준비합니다. 아래 버튼을 한 번 눌러 주세요.</p>
+      <button id="copy-image" type="button" disabled>원본 이미지 준비</button>
+      <div id="status">이미지 준비 요청을 기다리는 중입니다.</div>
+    </main>
+    <script src="clipboard-prep.js"></script>
+  </body>
+</html>

@@ -57,6 +57,14 @@ from automation_store import (
     upsert_run,
 )
 from toss_collector import collect_toss_listing, issue_toss_share_link
+from coupang_publication import (
+    approved_coupang_draft,
+    begin_coupang_extension_publish,
+    claim_coupang_approval,
+    record_coupang_pre_publish_failure,
+    record_coupang_publish_result,
+    request_coupang_publication_approval,
+)
 from toss_open_api import (
     TossOpenApiError,
     configured as open_api_configured,
@@ -80,6 +88,7 @@ OPEN_BROWSER = os.getenv("APP_OPEN_BROWSER", "true").strip().lower() in {
 MAX_PAGE_BYTES = 3 * 1024 * 1024
 MAX_IMAGE_BYTES = 15 * 1024 * 1024
 TOSS_IMAGE_HOSTS = {"shopping.toss.im", "resources-fe.toss.im", "static.toss.im"}
+COUPANG_IMAGE_HOSTS = {"coupangcdn.com"}
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
@@ -585,6 +594,28 @@ class AppHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK if status == "ok" else HTTPStatus.SERVICE_UNAVAILABLE,
             )
             return
+        if parsed.path == "/api/coupang/extension/approved-draft":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                prepared = approved_coupang_draft()
+                if not prepared:
+                    self._send_json({"ok": True, "result": None})
+                    return
+                draft = prepared.get("draft") if isinstance(prepared.get("draft"), dict) else {}
+                image_url = str(prepared.get("original_image_url") or "").strip()
+                if not image_url.startswith("https://"):
+                    raise ValueError("검증된 쿠팡 원본 대표 이미지를 확인하지 못했습니다.")
+                draft["imageUrl"] = f"{APP_PUBLIC_ORIGIN}/api/coupang/image?url={urllib.parse.quote(image_url, safe='')}"
+                prepared["draft"] = draft
+                prepared.pop("original_image_url", None)
+                self._send_json({"ok": True, "result": prepared})
+                return
+            except (ValueError, RuntimeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
         if parsed.path == "/api/extension/approved-draft":
             device_token = self.headers.get("X-Naver-Draft-Device", "")
             if not extension_device_valid(device_token):
@@ -679,6 +710,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
             return
+        if parsed.path == "/api/coupang/image":
+            self._handle_coupang_image(parsed)
+            return
         if parsed.path == "/api/image":
             self._handle_image(parsed)
             return
@@ -708,6 +742,69 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/coupang/extension/publish/begin":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                payload = self._read_json()
+                result = begin_coupang_extension_publish(
+                    str(payload.get("batch_id") or ""),
+                    payload.get("product") if isinstance(payload.get("product"), dict) else {},
+                )
+                self._send_json({"ok": True, "result": result})
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/api/coupang/extension/publish/pre-submit-failure":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                payload = self._read_json()
+                result = record_coupang_pre_publish_failure(
+                    str(payload.get("batch_id") or ""),
+                    str(payload.get("error_message") or ""),
+                )
+                self._send_json({"ok": True, "result": result})
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/api/coupang/extension/publish/preflight-success":
+            self._send_json({"ok": False, "error": "coupang_preflight_not_supported"}, HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/api/coupang/extension/publish/result":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                payload = self._read_json()
+                result = record_coupang_publish_result(
+                    str(payload.get("batch_id") or ""),
+                    str(payload.get("publish_token") or ""),
+                    str(payload.get("outcome") or ""),
+                    str(payload.get("naver_post_url") or ""),
+                    str(payload.get("error_message") or ""),
+                )
+                self._send_json({"ok": True, "result": result})
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/api/coupang/extension/approved-draft/claim":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                payload = self._read_json()
+                claimed = claim_coupang_approval(str(payload.get("batch_id") or ""))
+                self._send_json({"ok": True, "result": {"claimed": claimed}})
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         if parsed.path == "/api/extension/publish/begin":
             device_token = self.headers.get("X-Naver-Draft-Device", "")
             if not extension_device_valid(device_token):
@@ -854,6 +951,13 @@ class AppHandler(BaseHTTPRequestHandler):
                         }
                     )
                     return
+                if parsed.path == "/api/admin/coupang/approvals":
+                    result = request_coupang_publication_approval(
+                        payload if isinstance(payload, dict) else {},
+                        int(payload.get("ttl_minutes") or 30),
+                    )
+                    self._send_admin_json({"ok": True, "result": result})
+                    return
                 if parsed.path == "/api/admin/toss/links":
                     result = issue_toss_share_link(str(payload.get("taca_item_id") or ""))
                     self._send_admin_json({"ok": True, "result": result})
@@ -912,6 +1016,22 @@ class AppHandler(BaseHTTPRequestHandler):
                 {"ok": False, "error": f"처리 중 오류가 발생했습니다: {exc}"},
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
+
+    def _handle_coupang_image(self, parsed: urllib.parse.ParseResult) -> None:
+        query = urllib.parse.parse_qs(parsed.query)
+        image_url = query.get("url", [""])[0]
+        try:
+            data, _, content_type = _open_remote(
+                image_url,
+                COUPANG_IMAGE_HOSTS,
+                MAX_IMAGE_BYTES,
+            )
+            if not content_type.startswith("image/"):
+                raise ValueError("이미지 파일이 아닙니다.")
+            headers = {"Cache_Control": "private, max-age=3600"}
+            self._send_bytes(data, content_type, **headers)
+        except (ValueError, urllib.error.URLError, TimeoutError) as exc:
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
     def _handle_image(self, parsed: urllib.parse.ParseResult) -> None:
         query = urllib.parse.parse_qs(parsed.query)

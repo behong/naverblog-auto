@@ -103,3 +103,57 @@ class TelegramApprovalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TelegramMobileControlTests(unittest.TestCase):
+    @patch("telegram_approval.active_telegram_approval_chat_id", return_value="88")
+    @patch("telegram_approval._api")
+    def test_sends_mobile_control_panel(self, api, active_chat):
+        telegram_approval.send_mobile_control_panel()
+
+        self.assertEqual(api.call_args.args[0], "sendMessage")
+        payload = api.call_args.args[1]
+        keyboard = json.loads(payload["reply_markup"])
+        self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], "mc:status")
+        self.assertEqual(keyboard["inline_keyboard"][1][0]["callback_data"], "mc:pause")
+        self.assertEqual(keyboard["inline_keyboard"][1][1]["callback_data"], "mc:resume")
+
+    @patch("telegram_approval.active_telegram_approval_chat_id", return_value="88")
+    @patch("telegram_approval._api")
+    @patch("telegram_approval._answer_callback")
+    @patch("telegram_approval.set_mobile_toss_release_paused")
+    def test_pause_callback_sets_release_hold(self, set_paused, answer, api, active_chat):
+        telegram_approval.handle_update(
+            {
+                "callback_query": {
+                    "id": "control-1",
+                    "data": "mc:pause",
+                    "from": {"id": 77},
+                    "message": {"message_id": 91, "chat": {"id": 88}},
+                }
+            }
+        )
+
+        set_paused.assert_called_once_with(True)
+        answer.assert_called_once_with("control-1", "자동 발행을 보류했습니다.")
+        self.assertEqual(api.call_args.args[0], "sendMessage")
+
+    @patch("telegram_approval.active_telegram_approval_chat_id", return_value="88")
+    @patch("telegram_approval._api")
+    @patch("telegram_approval._answer_callback")
+    @patch("telegram_approval.set_mobile_toss_release_paused")
+    def test_rejects_mobile_control_from_unexpected_chat(self, set_paused, answer, api, active_chat):
+        telegram_approval.handle_update(
+            {
+                "callback_query": {
+                    "id": "control-2",
+                    "data": "mc:resume",
+                    "from": {"id": 77},
+                    "message": {"message_id": 91, "chat": {"id": 99}},
+                }
+            }
+        )
+
+        set_paused.assert_not_called()
+        api.assert_not_called()
+        answer.assert_called_once_with("control-2", "허용된 승인 채널에서만 사용할 수 있습니다.")

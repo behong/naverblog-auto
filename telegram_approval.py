@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import threading
@@ -14,9 +15,11 @@ from automation_store import (
     TELEGRAM_BOT_TOKEN,
     active_telegram_approval_chat_id,
     create_publication_approval_batch,
+    mobile_toss_status,
     resolve_publication_approval,
     set_publication_approval_expected_chat_id,
     set_publication_approval_message_id,
+    set_mobile_toss_release_paused,
     set_telegram_approval_chat_candidate,
     set_telegram_update_offset,
     telegram_update_offset,
@@ -132,6 +135,122 @@ def _disable_buttons(chat_id: str, message_id: int) -> None:
         return
 
 
+MOBILE_CONTROL_ACTIONS = {"status", "schedule", "pause", "resume", "help"}
+
+
+def _mobile_control_action(value: str) -> str | None:
+    prefix, separator, action = str(value or "").partition(":")
+    if prefix != "mc" or not separator or action not in MOBILE_CONTROL_ACTIONS:
+        return None
+    return action
+
+
+def _mobile_status_text() -> str:
+    status = mobile_toss_status()
+    queue = status["queue"]
+    release_state = "⏸ 보류" if status["release_paused"] else "▶️ 활성"
+    return "\n".join(
+        [
+            f"📊 오늘 토스 발행 현황 · {status['date']}",
+            "",
+            f"완료: {queue['PUBLISHED']}건",
+            f"대기: {queue['QUEUED']}건",
+            f"진행: {queue['RELEASED']}건",
+            f"공개 전 실패: {queue['FAILED_PRE_SUBMIT']}건",
+            f"결과 확인 필요: {queue['PUBLISH_UNKNOWN']}건",
+            f"자동 발행: {release_state}",
+            "",
+            "다음 초안 준비: 18:00 · 4건",
+            "승인된 대기열은 20분 간격으로 1건씩 순차 처리됩니다.",
+        ]
+    )
+
+
+def _mobile_schedule_text() -> str:
+    return "\n".join(
+        [
+            "🗓 오늘 운영 일정",
+            "",
+            "07:00 · 토스 초안 4건 준비",
+            "12:00 · 토스 초안 2건 준비",
+            "18:00 · 토스 초안 4건 준비",
+            "",
+            "각 시간대의 준비가 끝나면 텔레그램 승인 요청이 도착합니다.",
+            "승인된 항목만 20분 간격으로 한 건씩 발행합니다.",
+        ]
+    )
+
+
+def _mobile_help_text() -> str:
+    return "\n".join(
+        [
+            "💬 모바일 운영 도움말",
+            "",
+            "📊 오늘 현황: 완료·대기·진행·실패 상태를 확인합니다.",
+            "🗓 오늘 일정: 다음 초안 준비와 승인 흐름을 확인합니다.",
+            "⏸ 자동 발행 보류: 이미 승인된 후속 발행을 안전하게 멈춥니다.",
+            "▶️ 자동 발행 재개: 기존 승인 항목의 20분 간격 해제를 다시 허용합니다.",
+            "",
+            "상품 공개는 별도의 텔레그램 승인 없이는 시작되지 않습니다.",
+        ]
+    )
+
+
+def _mobile_control_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📊 오늘 현황", "callback_data": "mc:status"},
+                {"text": "🗓 오늘 일정", "callback_data": "mc:schedule"},
+            ],
+            [
+                {"text": "⏸ 자동 발행 보류", "callback_data": "mc:pause"},
+                {"text": "▶️ 자동 발행 재개", "callback_data": "mc:resume"},
+            ],
+            [{"text": "💬 운영 도움말", "callback_data": "mc:help"}],
+        ]
+    }
+
+
+def send_mobile_control_panel() -> None:
+    _api(
+        "sendMessage",
+        {
+            "chat_id": active_telegram_approval_chat_id(),
+            "text": "📱 블로그 자동 발행 모바일 운영 패널\n아래 버튼으로 오늘 현황과 자동 발행 상태를 관리할 수 있습니다.",
+            "reply_markup": json.dumps(_mobile_control_keyboard(), ensure_ascii=False, separators=(",", ":")),
+            "disable_web_page_preview": "true",
+        },
+    )
+
+
+def _handle_mobile_control(callback_id: str, chat_id: str, action: str) -> None:
+    expected_chat_id = active_telegram_approval_chat_id()
+    if not expected_chat_id or not hmac.compare_digest(chat_id, expected_chat_id):
+        _answer_callback(callback_id, "허용된 승인 채널에서만 사용할 수 있습니다.")
+        return
+    if action == "status":
+        _api("sendMessage", {"chat_id": chat_id, "text": _mobile_status_text(), "disable_web_page_preview": "true"})
+        _answer_callback(callback_id, "오늘 현황을 보냈습니다.")
+        return
+    if action == "schedule":
+        _api("sendMessage", {"chat_id": chat_id, "text": _mobile_schedule_text(), "disable_web_page_preview": "true"})
+        _answer_callback(callback_id, "오늘 일정을 보냈습니다.")
+        return
+    if action == "pause":
+        set_mobile_toss_release_paused(True)
+        _api("sendMessage", {"chat_id": chat_id, "text": "⏸ 자동 발행을 보류했습니다. 이미 공개 완료된 글에는 영향이 없고, 다음 대기열 해제만 멈춥니다."})
+        _answer_callback(callback_id, "자동 발행을 보류했습니다.")
+        return
+    if action == "resume":
+        set_mobile_toss_release_paused(False)
+        _api("sendMessage", {"chat_id": chat_id, "text": "▶️ 자동 발행을 재개했습니다. 기존 승인 항목만 다음 20분 해제 시각부터 순차 처리됩니다."})
+        _answer_callback(callback_id, "자동 발행을 재개했습니다.")
+        return
+    _api("sendMessage", {"chat_id": chat_id, "text": _mobile_help_text(), "disable_web_page_preview": "true"})
+    _answer_callback(callback_id, "운영 도움말을 보냈습니다.")
+
+
 def handle_update(update: dict[str, Any]) -> None:
     membership = update.get("my_chat_member")
     if isinstance(membership, dict):
@@ -144,15 +263,23 @@ def handle_update(update: dict[str, Any]) -> None:
     if not isinstance(callback, dict):
         return
     callback_id = str(callback.get("id") or "")
-    parsed = _callback_parts(str(callback.get("data") or ""))
+    callback_data = str(callback.get("data") or "")
+    mobile_action = _mobile_control_action(callback_data)
+    parsed = _callback_parts(callback_data)
     message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
     chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
     sender = callback.get("from") if isinstance(callback.get("from"), dict) else {}
     chat_id = str(chat.get("id") or "")
     user_id = str(sender.get("id") or "")
-    if not callback_id or not parsed or not chat_id:
+    if not callback_id or not chat_id:
         if callback_id:
-            _answer_callback(callback_id, "유효하지 않은 승인 요청입니다.")
+            _answer_callback(callback_id, "유효하지 않은 요청입니다.")
+        return
+    if mobile_action:
+        _handle_mobile_control(callback_id, chat_id, mobile_action)
+        return
+    if not parsed:
+        _answer_callback(callback_id, "유효하지 않은 승인 요청입니다.")
         return
     batch_id, action = parsed
     try:

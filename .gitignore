@@ -26,3 +26,7 @@ _recovery_*/
 .public-sync.zip
 data/
 diagnose_*.txt
+
+# Do not store environment templates or operational logs in the repository
+.env.example
+logs/

@@ -14,6 +14,7 @@ import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import psycopg
 from psycopg.rows import dict_row
@@ -376,6 +377,73 @@ def set_admin_toss_publisher_id(publisher_id: str) -> None:
 
 
 APPROVAL_ACTIONS = {"APPROVED", "HELD"}
+KOREA_TIMEZONE = ZoneInfo("Asia/Seoul")
+MOBILE_RELEASE_PAUSED_STATE_KEY = "mobile_toss_release_paused"
+
+
+def korea_today() -> date:
+    return datetime.now(KOREA_TIMEZONE).date()
+
+
+def mobile_toss_release_paused() -> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT state_value FROM telegram_bot_state WHERE state_key = %s",
+            (MOBILE_RELEASE_PAUSED_STATE_KEY,),
+        ).fetchone()
+    return str((row or {}).get("state_value") or "").strip() == "1"
+
+
+def set_mobile_toss_release_paused(paused: bool) -> bool:
+    value = "1" if paused else "0"
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO telegram_bot_state (state_key, state_value)
+            VALUES (%s, %s)
+            ON CONFLICT (state_key) DO UPDATE SET
+                state_value = EXCLUDED.state_value,
+                updated_at = now()
+            """,
+            (MOBILE_RELEASE_PAUSED_STATE_KEY, value),
+        )
+    return paused
+
+
+def mobile_toss_status() -> dict[str, Any]:
+    today = korea_today()
+    with _connect() as conn:
+        queue_rows = conn.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM scheduled_toss_publish_items
+            WHERE schedule_date = %s
+            GROUP BY status
+            """,
+            (today,),
+        ).fetchall()
+        window_rows = conn.execute(
+            """
+            SELECT source, status, item_count
+            FROM publication_approval_batches
+            WHERE source IN ('toss-draft-window:morning', 'toss-draft-window:midday', 'toss-draft-window:evening')
+              AND (created_at AT TIME ZONE 'Asia/Seoul')::date = %s
+            ORDER BY created_at
+            """,
+            (today,),
+        ).fetchall()
+    counts = {"QUEUED": 0, "RELEASED": 0, "PUBLISHED": 0, "FAILED_PRE_SUBMIT": 0, "PUBLISH_UNKNOWN": 0, "SKIPPED": 0}
+    for row in queue_rows:
+        counts[str(row["status"])] = int(row["count"])
+    return {
+        "date": today.isoformat(),
+        "release_paused": mobile_toss_release_paused(),
+        "queue": counts,
+        "windows": [
+            {"source": str(row["source"]), "status": str(row["status"]), "item_count": int(row["item_count"])}
+            for row in window_rows
+        ],
+    }
 
 
 def active_telegram_approval_chat_id() -> str:
@@ -508,6 +576,8 @@ def create_scheduled_toss_publish_items(
 
 def release_next_scheduled_toss_item(schedule_date: date) -> dict[str, Any]:
     """Create exactly one single-item APPROVED batch from an approved daily master queue."""
+    if mobile_toss_release_paused():
+        return {"released": False, "reason": "mobile_release_paused"}
     with _connect() as conn:
         active = conn.execute(
             """

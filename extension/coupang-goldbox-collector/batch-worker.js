@@ -39,6 +39,8 @@ function encodeDataUrl(payload) {
 }
 
 function enumerateGoldboxCandidates() {
+  const maxBatchSize = 12;
+  const travelKeywords = ['리조트', '숙박', '호텔', '여행', '평창', '제천', '항공'];
   const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const imageUrl = (image) => image.currentSrc || image.getAttribute('src') || image.getAttribute('data-src') || '';
   const previewId = (value) => {
@@ -60,7 +62,7 @@ function enumerateGoldboxCandidates() {
     const name = clean(first ? detail.slice(0, first.index).replace(/\d{1,3}%\s*$/, '') : '');
     const prices = priceMatches.map((match) => Number(match[0].replace(/[^0-9]/g, ''))).filter((value) => value > 0);
     const url = imageUrl(image);
-    if (!name || !url || !prices.length || name.includes('…') || TRAVEL_KEYWORDS.some((keyword) => name.includes(keyword))) continue;
+    if (!name || !url || !prices.length || name.includes('…') || travelKeywords.some((keyword) => name.includes(keyword))) continue;
     products.push({
       candidate_id: previewId(`${name}|${url}`),
       product_name: name,
@@ -72,13 +74,10 @@ function enumerateGoldboxCandidates() {
   const seen = new Set();
   return products.filter((item) => !seen.has(item.candidate_id) && seen.add(item.candidate_id))
     .sort((left, right) => left.sale_price - right.sale_price || right.normal_price - left.normal_price)
-    .slice(0, MAX_BATCH_SIZE);
+    .slice(0, maxBatchSize);
 }
 
 function clickGoldboxCandidate(candidateId) {
-  const candidates = enumerateGoldboxCandidates();
-  const candidate = candidates.find((item) => item.candidate_id === candidateId);
-  if (!candidate) return { ok: false, reason: 'candidate_not_found' };
   for (const image of document.querySelectorAll('img[alt="product"]')) {
     const card = image.parentElement?.parentElement || image.parentElement;
     const text = String(card?.textContent || '').replace(/\s+/g, ' ').trim();
@@ -90,6 +89,7 @@ function clickGoldboxCandidate(candidateId) {
     const url = image.currentSrc || image.getAttribute('src') || image.getAttribute('data-src') || '';
     if (`goldbox-preview-${(() => { let hash = 2166136261; for (const character of `${name}|${url}`) { hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16777619); } return (hash >>> 0).toString(16); })()}` !== candidateId) continue;
     const button = card?.querySelector('button.btn-generate-link') || Array.from(card?.querySelectorAll('button') || []).find((node) => String(node.textContent || '').trim() === '링크 생성');
+    const candidate = { candidate_id: candidateId, product_name: name, preview_image_url: url };
     if (!button) return { ok: false, reason: 'generate_link_button_not_found', candidate };
     button.click();
     return { ok: true, candidate };
@@ -125,6 +125,10 @@ async function execute(tabId, func, args = []) {
 }
 
 async function runBatch(tabId) {
+  // The previous single-link test leaves the tab on a link-generation route; always reset it first.
+  await chrome.tabs.update(tabId, { url: GOLDBOX_URL });
+  await waitForUrl(tabId, /#affiliate\/ws\/best\/goldbox/);
+  await sleep(900);
   const initial = await execute(tabId, enumerateGoldboxCandidates);
   if (!Array.isArray(initial) || !initial.length) throw new Error('골드박스 후보를 찾지 못했습니다. 목록을 다시 연 뒤 시도해 주세요.');
   const results = [];

@@ -64,7 +64,7 @@ function enumerateGoldboxCandidates() {
     const url = imageUrl(image);
     if (!name || !url || !prices.length || name.includes('…') || travelKeywords.some((keyword) => name.includes(keyword))) continue;
     products.push({
-      candidate_id: previewId(`${name}|${url}`),
+      candidate_id: previewId(`${name}|${prices[0]}|${prices[prices.length - 1]}`),
       product_name: name,
       preview_image_url: url,
       normal_price: prices[0],
@@ -77,7 +77,8 @@ function enumerateGoldboxCandidates() {
     .slice(0, maxBatchSize);
 }
 
-function clickGoldboxCandidate(candidateId) {
+function clickGoldboxCandidate(expectedCandidate) {
+  const expectedId = String(expectedCandidate?.candidate_id || '');
   for (const image of document.querySelectorAll('img[alt="product"]')) {
     const card = image.parentElement?.parentElement || image.parentElement;
     const text = String(card?.textContent || '').replace(/\s+/g, ' ').trim();
@@ -87,9 +88,14 @@ function clickGoldboxCandidate(candidateId) {
     const first = priceMatches[0];
     const name = String(first ? detail.slice(0, first.index).replace(/\d{1,3}%\s*$/, '') : '').replace(/\s+/g, ' ').trim();
     const url = image.currentSrc || image.getAttribute('src') || image.getAttribute('data-src') || '';
-    if (`goldbox-preview-${(() => { let hash = 2166136261; for (const character of `${name}|${url}`) { hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16777619); } return (hash >>> 0).toString(16); })()}` !== candidateId) continue;
+    const prices = priceMatches.map((match) => Number(match[0].replace(/[^0-9]/g, ''))).filter((value) => value > 0);
+    if (!name || !prices.length) continue;
+    let hash = 2166136261;
+    for (const character of `${name}|${prices[0]}|${prices[prices.length - 1]}`) { hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16777619); }
+    const currentId = `goldbox-preview-${(hash >>> 0).toString(16)}`;
+    if (currentId !== expectedId) continue;
     const button = card?.querySelector('button.btn-generate-link') || Array.from(card?.querySelectorAll('button') || []).find((node) => String(node.textContent || '').trim() === '링크 생성');
-    const candidate = { candidate_id: candidateId, product_name: name, preview_image_url: url };
+    const candidate = { candidate_id: currentId, product_name: name, preview_image_url: url, normal_price: prices[0], sale_price: prices[prices.length - 1] };
     if (!button) return { ok: false, reason: 'generate_link_button_not_found', candidate };
     button.click();
     return { ok: true, candidate };
@@ -138,7 +144,7 @@ async function runBatch(tabId) {
     await chrome.tabs.update(tabId, { url: GOLDBOX_URL });
     await waitForUrl(tabId, /#affiliate\/ws\/best\/goldbox/);
     await sleep(700);
-    const clicked = await execute(tabId, clickGoldboxCandidate, [candidate.candidate_id]);
+    const clicked = await execute(tabId, clickGoldboxCandidate, [candidate]);
     if (!clicked?.ok) {
       results.push({ candidate, ok: false, error: clicked?.reason || 'candidate_click_failed' });
       setProgress(index + 1, initial.length);

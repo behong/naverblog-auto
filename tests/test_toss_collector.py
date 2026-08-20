@@ -61,18 +61,32 @@ def test_today_deals_caps_requested_size_at_thirty(mock_request):
     assert result == {"items": [], "next_cursor": "", "has_next": False}
 
 
+@patch(
+    "toss_collector.auto_issue_toss_share_links",
+    return_value={
+        "enabled": True,
+        "candidates": 1,
+        "issued": 1,
+        "reused": 0,
+        "skipped_sold_out": 0,
+        "skipped_invalid": 0,
+        "failed": 0,
+        "quota_exceeded": False,
+    },
+)
 @patch("toss_collector.store_toss_collection", return_value={"id": "run-1", "saved_count": 1})
 @patch(
     "toss_collector.best_selling_products",
     return_value={"items": [{"taca_item_id": "1"}], "has_next": False, "next_cursor": ""},
 )
-def test_collect_toss_listing_persists_documented_best_listing(mock_best, mock_store):
+def test_collect_toss_listing_persists_documented_best_listing(mock_best, mock_store, mock_auto_issue):
     from toss_collector import collect_toss_listing
 
     result = collect_toss_listing("best-selling", 30)
 
     mock_best.assert_called_once_with(size=30)
     mock_store.assert_called_once_with("best-selling", 30, [{"taca_item_id": "1"}])
+    mock_auto_issue.assert_called_once_with([{"taca_item_id": "1"}])
     assert result == {
         "source": "best-selling",
         "requested_size": 30,
@@ -80,6 +94,16 @@ def test_collect_toss_listing_persists_documented_best_listing(mock_best, mock_s
         "has_next": False,
         "next_cursor_present": False,
         "run_id": "run-1",
+        "auto_issuance": {
+            "enabled": True,
+            "candidates": 1,
+            "issued": 1,
+            "reused": 0,
+            "skipped_sold_out": 0,
+            "skipped_invalid": 0,
+            "failed": 0,
+            "quota_exceeded": False,
+        },
     }
 
 

@@ -33,16 +33,26 @@ from admin_auth import (
 )
 from automation_store import (
     admin_password_hash,
+    begin_extension_publish,
     admin_toss_publisher_id,
+    admin_toss_publisher_settings,
     authorized as automation_authorized,
     check_duplicate,
+    latest_unclaimed_approved_publication,
+    mark_publication_approval_claimed,
+    record_extension_pre_publish_failure,
+    record_extension_preflight_success,
+    record_extension_publish_result,
     configured as automation_configured,
+    create_extension_device,
+    extension_device_valid,
     health as automation_health,
     init_schema as init_automation_schema,
     recent_runs,
     recent_toss_products,
     set_admin_password_hash,
     set_admin_toss_publisher_id,
+    toss_product_with_share_link,
     upsert_post,
     upsert_run,
 )
@@ -53,10 +63,12 @@ from toss_open_api import (
     health as open_api_health,
     product_detail,
 )
+from telegram_approval import configured as telegram_approval_configured, start_polling
 
 
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
+APP_PUBLIC_ORIGIN = os.getenv("PUBLIC_BASE_URL", "https://blogauto.hongzi.us").rstrip("/")
 HOST = os.getenv("APP_HOST", "127.0.0.1").strip() or "127.0.0.1"
 PORT = int(os.getenv("APP_PORT", "8765"))
 OPEN_BROWSER = os.getenv("APP_OPEN_BROWSER", "true").strip().lower() in {
@@ -107,6 +119,66 @@ class MetadataParser(HTMLParser):
     @property
     def title(self) -> str:
         return " ".join("".join(self.title_parts).split())
+
+
+def build_admin_toss_draft(taca_item_id: str) -> dict[str, object]:
+    item_id = str(taca_item_id or "").strip()
+    stored = toss_product_with_share_link(item_id)
+    if not stored:
+        raise ValueError("수집된 토스 상품을 찾지 못했습니다.")
+    if bool(stored.get("is_sold_out")):
+        raise ValueError("품절 상품은 블로그 초안을 만들 수 없습니다.")
+    if check_duplicate("toss", item_id).get("exists"):
+        raise ValueError("이미 처리 이력이 있는 상품은 중복 발행할 수 없습니다.")
+    share_url = str(stored.get("short_url") or "").strip()
+    if not share_url.startswith("https://"):
+        raise ValueError("검증된 토스 쉐어링크가 없습니다.")
+    detail = product_detail(taca_item_id=item_id)
+    if bool(detail.get("is_sold_out")):
+        raise ValueError("토스에서 현재 품절로 확인되어 초안 준비를 중단했습니다.")
+    images = detail.get("images") if isinstance(detail.get("images"), list) else []
+    image_url = str(images[0] or "").strip() if images else ""
+    if not image_url.startswith("https://"):
+        raise ValueError("원본 대표 이미지를 확인하지 못해 초안 준비를 중단했습니다.")
+    try:
+        price = int(str(detail.get("price") or ""))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("현재 가격을 확인하지 못해 초안 준비를 중단했습니다.") from exc
+    if price <= 0:
+        raise ValueError("현재 가격이 올바르지 않아 초안 준비를 중단했습니다.")
+    title = " ".join(str(detail.get("title") or stored.get("product_name") or "").split())
+    if not title:
+        raise ValueError("상품명을 확인하지 못했습니다.")
+    recommendation = random.choice((
+        "필요했던 생활용품이라면 구성과 현재 가격을 함께 확인해 보세요.",
+        "실속 있게 준비하기 좋은 구성인지 살펴보세요.",
+        "할인 중일 때 미리 준비해 두기 좋은 상품이에요.",
+        "구성과 현재 판매 조건을 확인한 뒤 선택해 보세요.",
+    ))
+    tag_tokens = []
+    for token in re.findall(r"[가-힣A-Za-z0-9]+", title):
+        if len(token) >= 2 and token not in tag_tokens:
+            tag_tokens.append(token)
+        if len(tag_tokens) >= 5:
+            break
+    for token in ("토스쇼핑", "쇼핑추천", "특가정보"):
+        if token not in tag_tokens:
+            tag_tokens.append(token)
+    tags = " ".join(f"#{token}" for token in tag_tokens[:7])
+    return {
+        "product_id": item_id,
+        "product_name": title,
+        "price": price,
+        "affiliate_url": share_url,
+        "draft": {
+            "title": f"{title}, {price:,}원",
+            "body": "\n\n".join(("상품 자세히 보기", share_url, recommendation, DISCLOSURE)),
+            "tags": tags,
+            "imageUrl": f"{APP_PUBLIC_ORIGIN}/api/image?url={urllib.parse.quote(image_url, safe='')}",
+        },
+        "category_no": 39,
+        "naver_write_url": "https://blog.naver.com/GoBlogWrite.naver?categoryNo=39",
+    }
 
 
 def parse_pasted_text(raw: str) -> dict[str, str]:
@@ -513,6 +585,37 @@ class AppHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK if status == "ok" else HTTPStatus.SERVICE_UNAVAILABLE,
             )
             return
+        if parsed.path == "/api/extension/approved-draft":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                claimed = latest_unclaimed_approved_publication()
+                if not claimed:
+                    self._send_json({"ok": True, "result": None})
+                    return
+                summary = claimed.get("summary") if isinstance(claimed.get("summary"), list) else []
+                if len(summary) != 1:
+                    raise ValueError("단건 승인 배치만 자동 입력할 수 있습니다.")
+                item_id = str((summary[0] or {}).get("product_id") or "")
+                prepared = build_admin_toss_draft(item_id)
+                draft = prepared.get("draft") if isinstance(prepared.get("draft"), dict) else {}
+                draft["approvalBatchId"] = str(claimed.get("id") or "")
+                draft["preflightOnly"] = str(claimed.get("source") or "") == "toss-preflight"
+                product = {
+                    "platform": "toss",
+                    "product_id": prepared.get("product_id"),
+                    "product_name": prepared.get("product_name"),
+                    "sale_price": prepared.get("price"),
+                    "affiliate_url": prepared.get("affiliate_url"),
+                    "naver_category": str(prepared.get("category_no") or ""),
+                }
+                self._send_json({"ok": True, "result": {"batch_id": str(claimed.get("id") or ""), "draft": draft, "product": product, "preflight_only": bool(draft.get("preflightOnly")), "naver_write_url": prepared.get("naver_write_url")}})
+                return
+            except (ValueError, RuntimeError, TossOpenApiError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
         if parsed.path.startswith("/api/admin/"):
             if not self._admin_password_hash():
                 self._send_admin_json({"ok": False, "error": "admin_not_configured"}, HTTPStatus.SERVICE_UNAVAILABLE)
@@ -528,8 +631,15 @@ class AppHandler(BaseHTTPRequestHandler):
                     )
                     return
                 if parsed.path == "/api/admin/settings":
+                    publisher = admin_toss_publisher_settings()
                     self._send_admin_json(
-                        {"ok": True, "result": {"publisher_configured": bool(admin_toss_publisher_id())}}
+                        {
+                            "ok": True,
+                            "result": {
+                                "publisher_configured": bool(publisher["configured"]),
+                                "publisher_source": publisher["source"],
+                            },
+                        }
                     )
                     return
                 if parsed.path == "/api/admin/toss/products":
@@ -598,6 +708,78 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/extension/publish/begin":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                payload = self._read_json()
+                result = begin_extension_publish(
+                    str(payload.get("batch_id") or ""),
+                    payload.get("product") if isinstance(payload.get("product"), dict) else {},
+                )
+                self._send_json({"ok": True, "result": result})
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/api/extension/publish/pre-submit-failure":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                payload = self._read_json()
+                result = record_extension_pre_publish_failure(
+                    str(payload.get("batch_id") or ""),
+                    str(payload.get("error_message") or ""),
+                )
+                self._send_json({"ok": True, "result": result})
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/api/extension/publish/preflight-success":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                payload = self._read_json()
+                result = record_extension_preflight_success(str(payload.get("batch_id") or ""))
+                self._send_json({"ok": True, "result": result})
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/api/extension/publish/result":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                payload = self._read_json()
+                result = record_extension_publish_result(
+                    str(payload.get("batch_id") or ""),
+                    str(payload.get("publish_token") or ""),
+                    str(payload.get("outcome") or ""),
+                    str(payload.get("naver_post_url") or ""),
+                    str(payload.get("error_message") or ""),
+                )
+                self._send_json({"ok": True, "result": result})
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/api/extension/approved-draft/claim":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                payload = self._read_json()
+                claimed = mark_publication_approval_claimed(str(payload.get("batch_id") or ""))
+                self._send_json({"ok": True, "result": {"claimed": claimed}})
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         if parsed.path == "/api/admin/setup":
             if not self._require_automation_auth():
                 return
@@ -653,15 +835,31 @@ class AppHandler(BaseHTTPRequestHandler):
                     revoke_session(self._admin_cookie_value())
                     self._send_admin_json({"ok": True}, clear_cookie=True)
                     return
+                if parsed.path == "/api/admin/extension/pair":
+                    self._send_admin_json({"ok": True, "result": {"device_token": create_extension_device()}})
+                    return
                 if parsed.path == "/api/admin/settings/publisher":
                     publisher_id = str(payload.get("publisher_id") or "").strip()
                     import uuid
                     uuid.UUID(publisher_id)
                     set_admin_toss_publisher_id(publisher_id)
-                    self._send_admin_json({"ok": True, "result": {"publisher_configured": True}})
+                    publisher = admin_toss_publisher_settings()
+                    self._send_admin_json(
+                        {
+                            "ok": True,
+                            "result": {
+                                "publisher_configured": bool(publisher["configured"]),
+                                "publisher_source": publisher["source"],
+                            },
+                        }
+                    )
                     return
                 if parsed.path == "/api/admin/toss/links":
                     result = issue_toss_share_link(str(payload.get("taca_item_id") or ""))
+                    self._send_admin_json({"ok": True, "result": result})
+                    return
+                if parsed.path == "/api/admin/toss/drafts":
+                    result = build_admin_toss_draft(str(payload.get("taca_item_id") or ""))
                     self._send_admin_json({"ok": True, "result": result})
                     return
                 if parsed.path == "/api/admin/toss/collect":
@@ -738,6 +936,8 @@ class AppHandler(BaseHTTPRequestHandler):
 def main() -> None:
     if automation_configured():
         init_automation_schema()
+    telegram_stop_event = threading.Event()
+    telegram_worker = start_polling(telegram_stop_event) if telegram_approval_configured() else None
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)
     url = f"http://{HOST}:{PORT}"
     print("\n네이버 블로그 글 도우미를 시작했습니다.")
@@ -750,6 +950,9 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n종료합니다.")
     finally:
+        telegram_stop_event.set()
+        if telegram_worker:
+            telegram_worker.join(timeout=2)
         server.server_close()
 
 

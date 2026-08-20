@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import hmac
 import json
+import secrets
 import os
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -19,8 +21,12 @@ from psycopg.rows import dict_row
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 AUTOMATION_API_TOKEN = os.getenv("AUTOMATION_API_TOKEN", "").strip()
+# This is a deployment setting, not an administrator credential.  When present,
+# it is the authoritative source for Open API share-link issuance.
+TOSS_OPEN_API_PUBLISHER_ID = os.getenv("TOSS_OPEN_API_PUBLISHER_ID", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_APPROVAL_CHAT_ID = os.getenv("TELEGRAM_APPROVAL_CHAT_ID", "").strip()
 DB_MAX_RETRIES = max(1, int(os.getenv("DB_MAX_RETRIES", "3")))
 AUTOMATION_AUDIT_CSV_PATH = os.getenv(
     "AUTOMATION_AUDIT_CSV_PATH", "data/automation_history.csv"
@@ -186,6 +192,100 @@ CREATE TABLE IF NOT EXISTS admin_settings (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE admin_settings ADD COLUMN IF NOT EXISTS toss_publisher_id text NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS publication_approval_batches (
+    id uuid PRIMARY KEY,
+    status text NOT NULL CHECK (status IN ('PENDING', 'APPROVED', 'HELD', 'EXPIRED')),
+    source text NOT NULL DEFAULT 'toss-daily',
+    item_count integer NOT NULL CHECK (item_count > 0),
+    summary jsonb NOT NULL DEFAULT '[]'::jsonb,
+    expected_chat_id text NOT NULL DEFAULT '',
+    telegram_message_id bigint,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL,
+    decided_at timestamptz,
+    decided_by_user_id text NOT NULL DEFAULT ''
+);
+ALTER TABLE publication_approval_batches
+    ADD COLUMN IF NOT EXISTS extension_claimed_at timestamptz;
+ALTER TABLE publication_approval_batches
+    ADD COLUMN IF NOT EXISTS publish_state text NOT NULL DEFAULT 'NOT_STARTED';
+ALTER TABLE publication_approval_batches
+    ADD COLUMN IF NOT EXISTS publish_token_hash text NOT NULL DEFAULT '';
+ALTER TABLE publication_approval_batches
+    ADD COLUMN IF NOT EXISTS publish_started_at timestamptz;
+ALTER TABLE publication_approval_batches
+    ADD COLUMN IF NOT EXISTS publish_finished_at timestamptz;
+ALTER TABLE publication_approval_batches
+    ADD COLUMN IF NOT EXISTS publish_error text NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS publication_approval_batches_pending_idx
+    ON publication_approval_batches (status, expires_at ASC);
+
+CREATE TABLE IF NOT EXISTS extension_devices (
+    id uuid PRIMARY KEY,
+    token_hash text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    last_seen_at timestamptz NOT NULL DEFAULT now(),
+    enabled boolean NOT NULL DEFAULT true
+);
+
+CREATE TABLE IF NOT EXISTS publication_approval_events (
+    id bigserial PRIMARY KEY,
+    batch_id uuid NOT NULL REFERENCES publication_approval_batches(id) ON DELETE CASCADE,
+    action text NOT NULL CHECK (action IN ('APPROVED', 'HELD', 'EXPIRED', 'REJECTED')),
+    actor_user_id text NOT NULL DEFAULT '',
+    actor_chat_id text NOT NULL DEFAULT '',
+    recorded_at timestamptz NOT NULL DEFAULT now(),
+    detail text NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS publication_approval_events_batch_idx
+    ON publication_approval_events (batch_id, recorded_at DESC);
+
+CREATE TABLE IF NOT EXISTS scheduled_toss_publish_items (
+    id uuid PRIMARY KEY,
+    master_batch_id uuid NOT NULL REFERENCES publication_approval_batches(id) ON DELETE CASCADE,
+    release_batch_id uuid UNIQUE REFERENCES publication_approval_batches(id) ON DELETE SET NULL,
+    schedule_date date NOT NULL,
+    sequence_no integer NOT NULL CHECK (sequence_no BETWEEN 1 AND 10),
+    product_id text NOT NULL,
+    product_name text NOT NULL DEFAULT '',
+    expected_price integer,
+    status text NOT NULL CHECK (status IN ('QUEUED', 'RELEASED', 'PUBLISHED', 'FAILED_PRE_SUBMIT', 'PUBLISH_UNKNOWN', 'SKIPPED')) DEFAULT 'QUEUED',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    released_at timestamptz,
+    finished_at timestamptz,
+    error_message text NOT NULL DEFAULT '',
+    UNIQUE (master_batch_id, sequence_no),
+    UNIQUE (schedule_date, product_id)
+);
+CREATE INDEX IF NOT EXISTS scheduled_toss_publish_due_idx
+    ON scheduled_toss_publish_items (schedule_date, status, sequence_no);
+
+CREATE TABLE IF NOT EXISTS scheduled_toss_publish_history (
+    original_item_id uuid PRIMARY KEY,
+    master_batch_id uuid NOT NULL,
+    release_batch_id uuid,
+    schedule_date date NOT NULL,
+    sequence_no integer NOT NULL,
+    product_id text NOT NULL,
+    product_name text NOT NULL DEFAULT '',
+    expected_price integer,
+    status text NOT NULL,
+    created_at timestamptz NOT NULL,
+    released_at timestamptz,
+    finished_at timestamptz,
+    error_message text NOT NULL DEFAULT '',
+    archived_at timestamptz NOT NULL DEFAULT now(),
+    archive_reason text NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS scheduled_toss_publish_history_date_idx
+    ON scheduled_toss_publish_history (schedule_date, status, archived_at DESC);
+
+CREATE TABLE IF NOT EXISTS telegram_bot_state (
+    state_key text PRIMARY KEY,
+    state_value text NOT NULL DEFAULT '',
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
 """
 
 
@@ -229,12 +329,33 @@ def admin_password_hash() -> str:
     return str((row or {}).get("password_hash") or "")
 
 
-def admin_toss_publisher_id() -> str:
+def _admin_toss_publisher_id_from_database() -> str:
     with _connect() as conn:
         row = conn.execute(
             "SELECT toss_publisher_id FROM admin_settings WHERE singleton = true"
         ).fetchone()
     return str((row or {}).get("toss_publisher_id") or "")
+
+
+def admin_toss_publisher_settings() -> dict[str, str | bool]:
+    """Return the effective publisher setting without exposing its UUID.
+
+    A deployment environment value always wins.  The existing administrator
+    setting remains a migration-friendly fallback for installations that have
+    not yet moved the value to their environment configuration.
+    """
+    if TOSS_OPEN_API_PUBLISHER_ID:
+        return {"configured": True, "source": "environment"}
+    database_value = _admin_toss_publisher_id_from_database()
+    if database_value:
+        return {"configured": True, "source": "database"}
+    return {"configured": False, "source": "unset"}
+
+
+def admin_toss_publisher_id() -> str:
+    if TOSS_OPEN_API_PUBLISHER_ID:
+        return TOSS_OPEN_API_PUBLISHER_ID
+    return _admin_toss_publisher_id_from_database()
 
 
 def set_admin_toss_publisher_id(publisher_id: str) -> None:
@@ -251,6 +372,774 @@ def set_admin_toss_publisher_id(publisher_id: str) -> None:
                 updated_at = now()
             """,
             (value,),
+        )
+
+
+APPROVAL_ACTIONS = {"APPROVED", "HELD"}
+
+
+def active_telegram_approval_chat_id() -> str:
+    if TELEGRAM_APPROVAL_CHAT_ID:
+        return TELEGRAM_APPROVAL_CHAT_ID
+    if not DATABASE_URL:
+        return TELEGRAM_CHAT_ID
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT state_value FROM telegram_bot_state WHERE state_key = 'approval_chat_id'"
+        ).fetchone()
+    selected = str((row or {}).get("state_value") or "").strip()
+    return selected or TELEGRAM_CHAT_ID
+
+
+def create_extension_device() -> str:
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO extension_devices (id, token_hash) VALUES (%s, %s)",
+            (uuid.uuid4(), token_hash),
+        )
+    return raw_token
+
+
+def extension_device_valid(raw_token: str) -> bool:
+    token = str(raw_token or "").strip()
+    if len(token) < 24:
+        return False
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE extension_devices
+            SET last_seen_at = now()
+            WHERE token_hash = %s AND enabled = true
+            RETURNING id
+            """,
+            (token_hash,),
+        ).fetchone()
+    return bool(row)
+
+
+def latest_unclaimed_approved_publication() -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, summary, source, created_at, decided_at
+            FROM publication_approval_batches
+            WHERE status = 'APPROVED' AND item_count = 1 AND extension_claimed_at IS NULL
+            ORDER BY decided_at DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def mark_publication_approval_claimed(batch_id: str) -> bool:
+    parsed_id = uuid.UUID(str(batch_id))
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE publication_approval_batches
+            SET extension_claimed_at = now()
+            WHERE id = %s AND status = 'APPROVED' AND extension_claimed_at IS NULL
+            RETURNING id
+            """,
+            (parsed_id,),
+        ).fetchone()
+    return bool(row)
+
+
+def release_latest_extension_claim_for_retry() -> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE publication_approval_batches
+            SET extension_claimed_at = NULL
+            WHERE id = (
+                SELECT id FROM publication_approval_batches
+                WHERE status = 'APPROVED' AND item_count = 1 AND extension_claimed_at IS NOT NULL
+                ORDER BY decided_at DESC NULLS LAST, created_at DESC
+                LIMIT 1
+            )
+            RETURNING id
+            """
+        ).fetchone()
+    return bool(row)
+
+
+def create_scheduled_toss_publish_items(
+    master_batch_id: str,
+    schedule_date: date,
+    items: list[dict[str, Any]],
+) -> int:
+    """Persist up to ten already-validated items behind one Telegram approval."""
+    parsed_master_id = uuid.UUID(str(master_batch_id))
+    if not items or len(items) > 10:
+        raise ValueError("scheduled Toss queue requires 1 to 10 items")
+    with _connect() as conn:
+        existing = conn.execute(
+            """
+            SELECT COALESCE(MAX(sequence_no), 0) AS max_sequence
+            FROM scheduled_toss_publish_items
+            WHERE schedule_date = %s
+            """,
+            (schedule_date,),
+        ).fetchone()
+        sequence_offset = int((existing or {}).get("max_sequence") or 0)
+        for index, item in enumerate(items, start=1):
+            product_id = str(item.get("product_id") or "").strip()
+            product_name = " ".join(str(item.get("product_name") or "").split())
+            try:
+                expected_price = int(item.get("price"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("scheduled Toss item price is invalid") from exc
+            if not product_id or not product_name or expected_price <= 0:
+                raise ValueError("scheduled Toss item is incomplete")
+            conn.execute(
+                """
+                INSERT INTO scheduled_toss_publish_items
+                    (id, master_batch_id, schedule_date, sequence_no, product_id, product_name, expected_price)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (uuid.uuid4(), parsed_master_id, schedule_date, sequence_offset + index, product_id[:200], product_name[:500], expected_price),
+            )
+    return len(items)
+
+
+def release_next_scheduled_toss_item(schedule_date: date) -> dict[str, Any]:
+    """Create exactly one single-item APPROVED batch from an approved daily master queue."""
+    with _connect() as conn:
+        active = conn.execute(
+            """
+            SELECT q.id
+            FROM scheduled_toss_publish_items q
+            WHERE q.schedule_date = %s AND q.status = 'RELEASED'
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+            """,
+            (schedule_date,),
+        ).fetchone()
+        if active:
+            return {"released": False, "reason": "previous_item_in_progress"}
+        item_row = conn.execute(
+            """
+            SELECT q.*, b.expected_chat_id
+            FROM scheduled_toss_publish_items q
+            JOIN publication_approval_batches b ON b.id = q.master_batch_id
+            WHERE q.schedule_date = %s
+              AND q.status = 'QUEUED'
+              AND b.status = 'APPROVED'
+            ORDER BY q.sequence_no ASC
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+            """,
+            (schedule_date,),
+        ).fetchone()
+        if not item_row:
+            return {"released": False, "reason": "no_approved_queued_item"}
+        item = dict(item_row)
+        summary = [{
+            "product_id": str(item["product_id"]),
+            "product_name": str(item["product_name"]),
+            "price": int(item["expected_price"]),
+        }]
+        release_batch_id = uuid.uuid4()
+        batch = conn.execute(
+            """
+            INSERT INTO publication_approval_batches
+                (id, status, source, item_count, summary, expected_chat_id, expires_at, decided_at)
+            VALUES (%s, 'APPROVED', 'toss-scheduled-release', 1, %s::jsonb, %s, now() + interval '1 day', now())
+            RETURNING id
+            """,
+            (release_batch_id, json.dumps(summary, ensure_ascii=False), str(item.get("expected_chat_id") or "")),
+        ).fetchone()
+        conn.execute(
+            """
+            UPDATE scheduled_toss_publish_items
+            SET status = 'RELEASED', release_batch_id = %s, released_at = now(), error_message = ''
+            WHERE id = %s
+            """,
+            (batch["id"], item["id"]),
+        )
+    return {"released": True, "batch_id": str(release_batch_id), "product_id": str(item["product_id"]), "sequence_no": int(item["sequence_no"])}
+
+
+def archive_terminal_scheduled_toss_items(schedule_date: date, archive_reason: str) -> int:
+    """Preserve terminal queue rows in history before freeing today's active queue slots."""
+    clean_reason = " ".join(str(archive_reason or "").split())[:200]
+    terminal_states = ("PUBLISHED", "FAILED_PRE_SUBMIT", "PUBLISH_UNKNOWN", "SKIPPED")
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            DELETE FROM scheduled_toss_publish_items
+            WHERE schedule_date = %s AND status = ANY(%s)
+            RETURNING id, master_batch_id, release_batch_id, schedule_date, sequence_no,
+                      product_id, product_name, expected_price, status, created_at,
+                      released_at, finished_at, error_message
+            """,
+            (schedule_date, list(terminal_states)),
+        ).fetchall()
+        for row in rows:
+            item = dict(row)
+            conn.execute(
+                """
+                INSERT INTO scheduled_toss_publish_history
+                    (original_item_id, master_batch_id, release_batch_id, schedule_date, sequence_no,
+                     product_id, product_name, expected_price, status, created_at, released_at,
+                     finished_at, error_message, archive_reason)
+                VALUES (%(id)s, %(master_batch_id)s, %(release_batch_id)s, %(schedule_date)s, %(sequence_no)s,
+                        %(product_id)s, %(product_name)s, %(expected_price)s, %(status)s, %(created_at)s,
+                        %(released_at)s, %(finished_at)s, %(error_message)s, %(archive_reason)s)
+                ON CONFLICT (original_item_id) DO NOTHING
+                """,
+                {**item, "archive_reason": clean_reason},
+            )
+    return len(rows)
+
+
+def scheduled_toss_queue_status(schedule_date: date) -> dict[str, int]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM scheduled_toss_publish_items
+            WHERE schedule_date = %s
+            GROUP BY status
+            """,
+            (schedule_date,),
+        ).fetchall()
+    result = {"QUEUED": 0, "RELEASED": 0, "PUBLISHED": 0, "FAILED_PRE_SUBMIT": 0, "PUBLISH_UNKNOWN": 0, "SKIPPED": 0}
+    for row in rows:
+        result[str(row["status"])] = int(row["count"])
+    return result
+
+
+def claim_latest_approved_publication() -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, summary, source, created_at, decided_at
+            FROM publication_approval_batches
+            WHERE status = 'APPROVED' AND item_count = 1 AND extension_claimed_at IS NULL
+            ORDER BY decided_at DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+            """
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "UPDATE publication_approval_batches SET extension_claimed_at = now() WHERE id = %s",
+            (row["id"],),
+        )
+    return dict(row)
+
+
+PUBLISH_TERMINAL_STATES = {"PUBLISHED", "PUBLISH_UNKNOWN", "FAILED_PRE_SUBMIT"}
+
+
+def _publish_product_values(product: dict[str, Any]) -> dict[str, Any]:
+    platform = str(product.get("platform") or "toss").strip().lower()
+    if platform != "toss":
+        raise ValueError("only Toss automatic publishing is supported")
+    product_id = str(product.get("product_id") or "").strip()
+    product_name = " ".join(str(product.get("product_name") or "").split())
+    affiliate_url = str(product.get("affiliate_url") or "").strip()
+    naver_category = str(product.get("naver_category") or "").strip()
+    sale_price = _optional_price(product, "sale_price")
+    if not product_id or not product_name or not affiliate_url.startswith("https://"):
+        raise ValueError("publish product data is incomplete")
+    if sale_price is None or sale_price <= 0:
+        raise ValueError("publish price is invalid")
+    if naver_category != "39":
+        raise ValueError("Naver category must be 39")
+    return {
+        "platform": platform,
+        "product_id": product_id[:200],
+        "product_name": product_name[:500],
+        "sale_price": sale_price,
+        "affiliate_url": affiliate_url[:2000],
+        "naver_category": naver_category,
+    }
+
+
+def begin_extension_publish(batch_id: str, product: dict[str, Any]) -> dict[str, Any]:
+    """Acquire the single-use publication lock immediately before clicking Naver publish.
+
+    The row-level lock and the PUBLISHING blog_post record make a duplicate click or
+    a second device fail closed.  Only the SHA-256 hash of the short-lived result
+    token is persisted.
+    """
+    parsed_id = uuid.UUID(str(batch_id))
+    values = _publish_product_values(product)
+    with _connect() as conn:
+        batch_row = conn.execute(
+            """
+            SELECT id, status, summary, extension_claimed_at, publish_state
+            FROM publication_approval_batches
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (parsed_id,),
+        ).fetchone()
+        if not batch_row:
+            raise ValueError("approval batch not found")
+        batch = dict(batch_row)
+        if batch.get("status") != "APPROVED" or batch.get("extension_claimed_at") is None:
+            raise ValueError("approval batch is not ready for publishing")
+        summary = batch.get("summary") if isinstance(batch.get("summary"), list) else []
+        if len(summary) != 1 or str((summary[0] or {}).get("product_id") or "") != values["product_id"]:
+            raise ValueError("approval batch product does not match the publish request")
+        if str(batch.get("publish_state") or "NOT_STARTED") in {"PUBLISHING", "PUBLISHED", "PUBLISH_UNKNOWN"}:
+            raise ValueError("this approval batch already has a publish attempt")
+        existing = conn.execute(
+            """
+            SELECT status, naver_post_url
+            FROM blog_posts
+            WHERE platform = %s AND product_id = %s
+            FOR UPDATE
+            """,
+            (values["platform"], values["product_id"]),
+        ).fetchone()
+        if existing and str(existing.get("status") or "") in {"PUBLISHING", "PUBLISHED"}:
+            raise ValueError("this product is already publishing or has been published")
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        context = json.dumps({"approval_batch_id": str(parsed_id), "publish_mode": "telegram_one_tap"}, ensure_ascii=False)
+        conn.execute(
+            """
+            INSERT INTO blog_posts
+                (platform, product_id, product_name, sale_price, affiliate_url,
+                 naver_category, status, metadata)
+            VALUES (%(platform)s, %(product_id)s, %(product_name)s, %(sale_price)s,
+                    %(affiliate_url)s, %(naver_category)s, 'PUBLISHING', %(metadata)s::jsonb)
+            ON CONFLICT (platform, product_id) DO UPDATE SET
+                product_name = EXCLUDED.product_name,
+                sale_price = EXCLUDED.sale_price,
+                affiliate_url = EXCLUDED.affiliate_url,
+                naver_category = EXCLUDED.naver_category,
+                status = 'PUBLISHING',
+                metadata = blog_posts.metadata || EXCLUDED.metadata,
+                updated_at = now()
+            """,
+            {**values, "metadata": context},
+        )
+        conn.execute(
+            """
+            UPDATE publication_approval_batches
+            SET publish_state = 'PUBLISHING', publish_token_hash = %s,
+                publish_started_at = now(), publish_finished_at = NULL, publish_error = ''
+            WHERE id = %s
+            """,
+            (token_hash, parsed_id),
+        )
+    return {"publish_token": raw_token, "publish_state": "PUBLISHING"}
+
+
+def record_extension_pre_publish_failure(batch_id: str, error_message: str) -> dict[str, Any]:
+    """Record a verified pre-click failure so a scheduled RELEASED item cannot block the queue."""
+    parsed_id = uuid.UUID(str(batch_id))
+    error_text = str(error_message or "자동 입력 또는 공개 전 검증에 실패했습니다.").strip()[:2000]
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, status, summary, publish_state, extension_claimed_at
+            FROM publication_approval_batches
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (parsed_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("approval batch not found")
+        batch = dict(row)
+        if batch.get("status") != "APPROVED":
+            raise ValueError("approval batch is not ready for pre-publish failure recording")
+        if str(batch.get("publish_state") or "NOT_STARTED") != "NOT_STARTED":
+            raise ValueError("approval batch has already entered publication")
+        summary = batch.get("summary") if isinstance(batch.get("summary"), list) else []
+        if len(summary) != 1:
+            raise ValueError("approval batch must contain exactly one product")
+        product_name = " ".join(str((summary[0] or {}).get("product_name") or "상품").split())
+        scheduled = conn.execute(
+            """
+            SELECT sequence_no
+            FROM scheduled_toss_publish_items
+            WHERE release_batch_id = %s
+            FOR UPDATE
+            """,
+            (parsed_id,),
+        ).fetchone()
+        conn.execute(
+            """
+            UPDATE publication_approval_batches
+            SET publish_state = 'FAILED_PRE_SUBMIT', publish_finished_at = now(), publish_error = %s
+            WHERE id = %s
+            """,
+            (error_text, parsed_id),
+        )
+        conn.execute(
+            """
+            UPDATE scheduled_toss_publish_items
+            SET status = 'FAILED_PRE_SUBMIT', finished_at = now(), error_message = %s
+            WHERE release_batch_id = %s AND status = 'RELEASED'
+            """,
+            (error_text, parsed_id),
+        )
+    sequence_text = f"\n오늘 진행: {int(scheduled['sequence_no'])}/10건" if scheduled else ""
+    notify_telegram_approval(
+        "❌ 공개 전 자동 입력이 중단됐습니다.\n"
+        f"상품: {product_name}{sequence_text}\n"
+        f"사유: {error_text}\n공개하지 않았습니다. 다음 예약 항목은 별도 검증 후 진행합니다."
+    )
+    return {"batch_id": str(parsed_id), "outcome": "FAILED_PRE_SUBMIT"}
+
+
+def record_extension_preflight_success(batch_id: str) -> dict[str, Any]:
+    """Record a non-publishing editor preflight after title/link/image input succeeds."""
+    parsed_id = uuid.UUID(str(batch_id))
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, status, source, summary, publish_state, extension_claimed_at
+            FROM publication_approval_batches
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (parsed_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("approval batch not found")
+        batch = dict(row)
+        if batch.get("status") != "APPROVED" or batch.get("extension_claimed_at") is None:
+            raise ValueError("approval batch is not ready for preflight recording")
+        if str(batch.get("source") or "") != "toss-preflight":
+            raise ValueError("approval batch is not a preflight batch")
+        if str(batch.get("publish_state") or "NOT_STARTED") != "NOT_STARTED":
+            raise ValueError("approval batch has already entered publication")
+        summary = batch.get("summary") if isinstance(batch.get("summary"), list) else []
+        if len(summary) != 1:
+            raise ValueError("approval batch must contain exactly one product")
+        product_name = " ".join(str((summary[0] or {}).get("product_name") or "상품").split())
+        conn.execute(
+            """
+            UPDATE publication_approval_batches
+            SET publish_state = 'PREFLIGHT_PASSED', publish_finished_at = now(), publish_error = ''
+            WHERE id = %s
+            """,
+            (parsed_id,),
+        )
+    notify_telegram_approval(
+        "✅ 네이버 입력 사전 검증을 통과했습니다.\n"
+        f"상품: {product_name}\n"
+        "제목·일반 링크·원본 이미지를 확인했습니다. 발행 버튼은 누르지 않았습니다."
+    )
+    return {"batch_id": str(parsed_id), "outcome": "PREFLIGHT_PASSED"}
+
+
+def record_extension_publish_result(
+    batch_id: str,
+    publish_token: str,
+    outcome: str,
+    naver_post_url: str = "",
+    error_message: str = "",
+) -> dict[str, Any]:
+    """Finalize a locked publication without allowing an ambiguous click to retry."""
+    parsed_id = uuid.UUID(str(batch_id))
+    raw_token = str(publish_token or "").strip()
+    supplied_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest() if raw_token else ""
+    normalized_outcome = str(outcome or "").strip().upper()
+    if normalized_outcome not in PUBLISH_TERMINAL_STATES:
+        raise ValueError("unsupported publish result")
+    clean_url = str(naver_post_url or "").strip()[:2000]
+    error_text = str(error_message or "").strip()[:2000]
+    if normalized_outcome == "PUBLISHED" and not clean_url:
+        raise ValueError("published result requires a Naver post URL")
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, status, summary, publish_state, publish_token_hash
+            FROM publication_approval_batches
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (parsed_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("approval batch not found")
+        batch = dict(row)
+        if batch.get("publish_state") != "PUBLISHING":
+            raise ValueError("approval batch is not awaiting a publish result")
+        if not raw_token or not hmac.compare_digest(str(batch.get("publish_token_hash") or ""), supplied_hash):
+            raise ValueError("publish result token is invalid")
+        summary = batch.get("summary") if isinstance(batch.get("summary"), list) else []
+        if len(summary) != 1:
+            raise ValueError("approval batch must contain exactly one product")
+        product_id = str((summary[0] or {}).get("product_id") or "").strip()
+        if not product_id:
+            raise ValueError("approval batch product is missing")
+        if normalized_outcome == "PUBLISHED":
+            conn.execute(
+                """
+                UPDATE blog_posts
+                SET status = 'PUBLISHED', naver_post_url = %s, published_at = now(), updated_at = now(),
+                    metadata = metadata || %s::jsonb
+                WHERE platform = 'toss' AND product_id = %s
+                """,
+                (clean_url, json.dumps({"approval_batch_id": str(parsed_id), "publish_mode": "telegram_one_tap"}, ensure_ascii=False), product_id),
+            )
+        elif normalized_outcome == "FAILED_PRE_SUBMIT":
+            conn.execute(
+                """
+                UPDATE blog_posts
+                SET status = 'FAILED', updated_at = now(),
+                    metadata = metadata || %s::jsonb
+                WHERE platform = 'toss' AND product_id = %s
+                """,
+                (json.dumps({"approval_batch_id": str(parsed_id), "publish_error": error_text}, ensure_ascii=False), product_id),
+            )
+        conn.execute(
+            """
+            UPDATE publication_approval_batches
+            SET publish_state = %s, publish_finished_at = now(), publish_error = %s
+            WHERE id = %s
+            """,
+            (normalized_outcome, error_text, parsed_id),
+        )
+        scheduled = conn.execute(
+            """
+            SELECT sequence_no
+            FROM scheduled_toss_publish_items
+            WHERE release_batch_id = %s
+            FOR UPDATE
+            """,
+            (parsed_id,),
+        ).fetchone()
+        conn.execute(
+            """
+            UPDATE scheduled_toss_publish_items
+            SET status = %s, finished_at = now(), error_message = %s
+            WHERE release_batch_id = %s AND status = 'RELEASED'
+            """,
+            (normalized_outcome, error_text, parsed_id),
+        )
+    product_name = " ".join(str((summary[0] or {}).get("product_name") or "상품").split())
+    sequence_text = f"\n오늘 진행: {int(scheduled['sequence_no'])}/10건" if scheduled else ""
+    if normalized_outcome == "PUBLISHED":
+        notify_telegram_approval(
+            f"✅ 블로그 발행 완료\n상품: {product_name}\n공개 글: {clean_url}{sequence_text}"
+        )
+    elif normalized_outcome == "PUBLISH_UNKNOWN":
+        notify_telegram_approval(
+            "⚠️ 발행 후 공개 URL을 자동 확인하지 못했습니다.\n"
+            f"상품: {product_name}{sequence_text}\n"
+            "중복 방지를 위해 자동 재클릭은 차단됐습니다.\n"
+            "휴대폰 확인: https://blog.naver.com/sijm\n"
+            "최신 글이 보이면 그 URL을 보내고, 보이지 않으면 ‘미발행’이라고 알려 주세요."
+        )
+    else:
+        notify_telegram_approval(
+            "❌ 네이버 공개 전 검증 또는 버튼 탐색에 실패했습니다.\n"
+            f"사유: {error_text or '알 수 없는 오류'}\n공개하지 않았습니다."
+        )
+    return {"batch_id": str(parsed_id), "outcome": normalized_outcome, "naver_post_url": clean_url}
+
+
+def set_telegram_approval_chat_id(chat_id: str) -> None:
+    normalized_chat_id = str(chat_id or "").strip()
+    if not normalized_chat_id:
+        raise ValueError("invalid Telegram approval chat ID")
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO telegram_bot_state (state_key, state_value)
+            VALUES ('approval_chat_id', %s)
+            ON CONFLICT (state_key) DO UPDATE SET state_value = EXCLUDED.state_value, updated_at = now()
+            """,
+            (normalized_chat_id[:100],),
+        )
+
+
+def set_telegram_approval_chat_candidate(chat_id: str) -> None:
+    normalized_chat_id = str(chat_id or "").strip()
+    if not normalized_chat_id:
+        return
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO telegram_bot_state (state_key, state_value)
+            VALUES ('approval_chat_candidate_id', %s)
+            ON CONFLICT (state_key) DO UPDATE SET state_value = EXCLUDED.state_value, updated_at = now()
+            """,
+            (normalized_chat_id[:100],),
+        )
+
+
+def activate_telegram_approval_chat_candidate() -> bool:
+    with _connect() as conn:
+        candidate = conn.execute(
+            "SELECT state_value FROM telegram_bot_state WHERE state_key = 'approval_chat_candidate_id'"
+        ).fetchone()
+    value = str((candidate or {}).get("state_value") or "").strip()
+    if not value:
+        return False
+    set_telegram_approval_chat_id(value)
+    return True
+
+
+def create_publication_approval_batch(
+    summary: list[dict[str, Any]],
+    expires_at: datetime,
+    source: str = "toss-daily",
+) -> dict[str, Any]:
+    approval_chat_id = active_telegram_approval_chat_id()
+    if not approval_chat_id:
+        raise RuntimeError("TELEGRAM approval chat is not configured")
+    if not summary:
+        raise ValueError("approval batch requires at least one item")
+    if len(summary) > 10:
+        raise ValueError("approval batch cannot contain more than 10 items")
+    if expires_at.tzinfo is None:
+        raise ValueError("approval expiry must include a timezone")
+    batch_id = uuid.uuid4()
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO publication_approval_batches
+                (id, status, source, item_count, summary, expected_chat_id, expires_at)
+            VALUES (%s, 'PENDING', %s, %s, %s::jsonb, %s, %s)
+            RETURNING id, status, source, item_count, summary, created_at, expires_at
+            """,
+            (
+                batch_id,
+                str(source or "toss-daily")[:100],
+                len(summary),
+                json.dumps(summary, ensure_ascii=False),
+                approval_chat_id,
+                expires_at,
+            ),
+        ).fetchone()
+    return dict(row or {})
+
+
+def set_publication_approval_expected_chat_id(batch_id: str, chat_id: str) -> None:
+    parsed_id = uuid.UUID(str(batch_id))
+    normalized_chat_id = str(chat_id or "").strip()
+    if not normalized_chat_id:
+        raise ValueError("invalid Telegram chat ID")
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE publication_approval_batches SET expected_chat_id = %s WHERE id = %s",
+            (normalized_chat_id[:100], parsed_id),
+        )
+
+
+def set_publication_approval_message_id(batch_id: str, message_id: int) -> None:
+    parsed_id = uuid.UUID(str(batch_id))
+    parsed_message_id = int(message_id)
+    if parsed_message_id <= 0:
+        raise ValueError("invalid Telegram message ID")
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE publication_approval_batches SET telegram_message_id = %s WHERE id = %s",
+            (parsed_message_id, parsed_id),
+        )
+
+
+def resolve_publication_approval(
+    batch_id: str,
+    action: str,
+    actor_chat_id: str,
+    actor_user_id: str,
+) -> dict[str, Any]:
+    parsed_id = uuid.UUID(str(batch_id))
+    normalized_action = str(action or "").strip().upper()
+    if normalized_action not in APPROVAL_ACTIONS:
+        raise ValueError("unsupported approval action")
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM publication_approval_batches WHERE id = %s FOR UPDATE",
+            (parsed_id,),
+        ).fetchone()
+        if not row:
+            return {"accepted": False, "reason": "not_found"}
+        batch = dict(row)
+        if str(batch.get("expected_chat_id") or "") != str(actor_chat_id or ""):
+            conn.execute(
+                """
+                INSERT INTO publication_approval_events
+                    (batch_id, action, actor_user_id, actor_chat_id, detail)
+                VALUES (%s, 'REJECTED', %s, %s, 'unexpected_chat')
+                """,
+                (parsed_id, str(actor_user_id or "")[:100], str(actor_chat_id or "")[:100]),
+            )
+            return {"accepted": False, "reason": "unexpected_chat"}
+        if batch.get("status") != "PENDING":
+            return {"accepted": False, "reason": str(batch.get("status") or "resolved").lower()}
+        now = datetime.now(timezone.utc)
+        if batch.get("expires_at") is not None and batch["expires_at"] <= now:
+            conn.execute(
+                """
+                UPDATE publication_approval_batches
+                SET status = 'EXPIRED', decided_at = now(), decided_by_user_id = %s
+                WHERE id = %s
+                """,
+                (str(actor_user_id or "")[:100], parsed_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO publication_approval_events
+                    (batch_id, action, actor_user_id, actor_chat_id, detail)
+                VALUES (%s, 'EXPIRED', %s, %s, 'expired_before_response')
+                """,
+                (parsed_id, str(actor_user_id or "")[:100], str(actor_chat_id or "")[:100]),
+            )
+            return {"accepted": False, "reason": "expired"}
+        updated = conn.execute(
+            """
+            UPDATE publication_approval_batches
+            SET status = %s, decided_at = now(), decided_by_user_id = %s
+            WHERE id = %s AND status = 'PENDING'
+            RETURNING id, status, item_count, summary, telegram_message_id, expires_at
+            """,
+            (normalized_action, str(actor_user_id or "")[:100], parsed_id),
+        ).fetchone()
+        if not updated:
+            return {"accepted": False, "reason": "resolved"}
+        conn.execute(
+            """
+            INSERT INTO publication_approval_events
+                (batch_id, action, actor_user_id, actor_chat_id, detail)
+            VALUES (%s, %s, %s, %s, 'telegram_callback')
+            """,
+            (parsed_id, normalized_action, str(actor_user_id or "")[:100], str(actor_chat_id or "")[:100]),
+        )
+    result = dict(updated or {})
+    result["accepted"] = True
+    return result
+
+
+def telegram_update_offset() -> int:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT state_value FROM telegram_bot_state WHERE state_key = 'update_offset'"
+        ).fetchone()
+    try:
+        return max(0, int((row or {}).get("state_value") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def set_telegram_update_offset(offset: int) -> None:
+    value = max(0, int(offset))
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO telegram_bot_state (state_key, state_value)
+            VALUES ('update_offset', %s)
+            ON CONFLICT (state_key) DO UPDATE SET state_value = EXCLUDED.state_value, updated_at = now()
+            """,
+            (str(value),),
         )
 
 
@@ -489,7 +1378,11 @@ def check_duplicate(platform: str, product_id: str) -> dict[str, Any]:
             "FROM blog_posts WHERE platform = %s AND product_id = %s",
             (platform, product_id),
         ).fetchone()
-    return {"exists": bool(row), "post": dict(row) if row else None}
+    post = dict(row) if row else None
+    # 공개 전 차단(FAILED)은 새 승인으로 재시도할 수 있어야 한다. 반대로 클릭이 시작된
+    # PUBLISHING·PUBLISHED·PUBLISH_UNKNOWN은 결과가 확정될 때까지 항상 중복을 막는다.
+    blocked = {"PUBLISHING", "PUBLISHED", "PUBLISH_UNKNOWN"}
+    return {"exists": bool(post and str(post.get("status") or "") in blocked), "post": post}
 
 
 def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
@@ -502,6 +1395,27 @@ def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
             (limit,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def notify_telegram_approval(text: str) -> bool:
+    """Send a result notice to the approval channel without exposing its identifier."""
+    chat_id = active_telegram_approval_chat_id()
+    if not TELEGRAM_BOT_TOKEN or not chat_id:
+        return False
+    data = urllib.parse.urlencode(
+        {"chat_id": chat_id, "text": text[:4096], "disable_web_page_preview": "true"}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return 200 <= response.status < 300
+    except (urllib.error.URLError, TimeoutError):
+        return False
 
 
 def notify_telegram(text: str) -> bool:
@@ -698,6 +1612,24 @@ def ensure_toss_share_link(
     result = dict(row or {})
     result["reused"] = False
     return result
+
+
+def toss_product_with_share_link(taca_item_id: str) -> dict[str, Any] | None:
+    item_id = str(taca_item_id or "").strip()
+    if not item_id.isdigit():
+        raise ValueError("invalid Toss item ID")
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT p.taca_item_id, p.product_name, p.thumbnail_url, p.product_url,
+                   p.display_price, p.is_sold_out, l.short_url, l.origin_url
+            FROM toss_products p
+            LEFT JOIN toss_share_links l ON l.taca_item_id = p.taca_item_id
+            WHERE p.taca_item_id = %s
+            """,
+            (item_id,),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def recent_toss_products(source: str = "best-selling", limit: int = 100) -> list[dict[str, Any]]:

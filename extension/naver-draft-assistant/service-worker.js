@@ -4,8 +4,222 @@ const BLOGAUTO_ORIGIN = "https://blogauto.hongzi.us";
 const DEBUGGER_VERSION = "1.3";
 const LINK_TRACE_KEY = "naverDraftAssistantLinkTrace";
 const AUTOFILL_TRACE_KEY = "naverDraftAssistantAutoFillTrace";
-
+const DEVICE_TOKEN_KEY = "naverDraftAssistantDeviceToken";
+const PAIR_TAB_ID_KEY = "naverDraftAssistantPairTabId";
+const APPROVAL_ALARM = "naverDraftAssistantApprovalPoll";
+const clipboardPrepPorts = new Map();
+let imageClipboardPort = null;
+let creatingImageClipboardDocument = null;
 chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+// 서비스 워커가 어떤 확장 이벤트로 다시 깨어나도 다음 승인 폴링 알람을 보장한다.
+chrome.alarms.create(APPROVAL_ALARM, { periodInMinutes: 1 });
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === "naver-draft-image-offscreen") {
+    imageClipboardPort = port;
+    port.onDisconnect.addListener(() => {
+      if (imageClipboardPort === port) imageClipboardPort = null;
+    });
+    return;
+  }
+  if (port.name !== "naver-draft-clipboard-prep" || !port.sender?.tab?.id) return;
+  const tabId = port.sender.tab.id;
+  clipboardPrepPorts.set(tabId, port);
+  port.onDisconnect.addListener(() => clipboardPrepPorts.delete(tabId));
+});
+
+async function waitForClipboardPrepPort(tabId) {
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const port = clipboardPrepPorts.get(tabId);
+    if (port) return port;
+    await sleep(100);
+  }
+  throw new Error("이미지 준비 탭 연결 시간이 초과되었습니다.");
+}
+
+async function hasImageClipboardDocument() {
+  const documentUrl = chrome.runtime.getURL("offscreen.html");
+  if (typeof chrome.runtime.getContexts === "function") {
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+      documentUrls: [documentUrl],
+    });
+    return contexts.length > 0;
+  }
+  const clientsList = await clients.matchAll();
+  return clientsList.some((client) => client.url === documentUrl);
+}
+
+async function ensureImageClipboardDocument() {
+  // Chrome의 권장 방식대로 문서 존재 여부만 확인한다.
+  // 메시지는 runtime.sendMessage로 전달하므로 서비스 워커 재시작 뒤의 장기 포트 상태에 의존하지 않는다.
+  if (await hasImageClipboardDocument()) return;
+  if (!creatingImageClipboardDocument) {
+    creatingImageClipboardDocument = chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: ["CLIPBOARD"],
+      justification: "원본 상품 이미지를 PNG 클립보드 데이터로 준비해 네이버 편집기에 붙여넣습니다.",
+    });
+  }
+  try {
+    await creatingImageClipboardDocument;
+  } finally {
+    creatingImageClipboardDocument = null;
+  }
+}
+
+async function closeImageClipboardDocument() {
+  if (creatingImageClipboardDocument) await creatingImageClipboardDocument.catch(() => undefined);
+  if (await hasImageClipboardDocument().catch(() => false)) {
+    await chrome.offscreen.closeDocument().catch(() => undefined);
+  }
+}
+
+async function waitForImageClipboardPort() {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (imageClipboardPort) return imageClipboardPort;
+    await sleep(100);
+  }
+  throw new Error("숨겨진 이미지 준비 문서에 연결하지 못했습니다.");
+}
+
+async function prepareApprovedImage(imageUrl, windowId) {
+  // 포커스를 가진 일반 Chrome 전용 탭에서만 PNG 클립보드를 준비한다.
+  // 숨은 문서는 Chrome이 클립보드 쓰기를 차단하므로 사용하지 않는다.
+  const safeUrl = safeImageUrl(imageUrl);
+  if (!safeUrl) throw new Error("원본 대표 이미지 주소를 확인하지 못했습니다.");
+  const createProperties = { url: chrome.runtime.getURL("clipboard-prep.html"), active: true };
+  if (Number.isInteger(windowId)) createProperties.windowId = windowId;
+  const prepTab = await chrome.tabs.create(createProperties);
+  if (!Number.isInteger(prepTab?.id)) throw new Error("원본 이미지 준비용 전용 탭을 열지 못했습니다.");
+  try {
+    const port = await waitForClipboardPrepPort(prepTab.id);
+    const requestId = crypto.randomUUID();
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        port.onMessage.removeListener(onMessage);
+        if (error) reject(error); else resolve();
+      };
+      const onMessage = (message) => {
+        if (message?.requestId !== requestId) return;
+        if (message?.ok) finish();
+        else finish(new Error(String(message?.error || "원본 대표 이미지 클립보드 준비에 실패했습니다.")));
+      };
+      const timeoutId = setTimeout(() => finish(new Error("원본 이미지 준비 탭의 버튼을 60초 안에 누르지 않았습니다.")), 60000);
+      port.onMessage.addListener(onMessage);
+      try {
+        port.postMessage({ type: "CLIPBOARD_PREPARE_IMAGE", requestId, imageUrl: safeUrl, autoAttempt: true });
+        // Chrome의 실제 입력 경로를 사용해 준비 탭의 버튼을 한 번 자동 클릭한다.
+        // 브라우저 정책이 이를 사용자 활성화로 인정하지 않으면 준비 탭은 수동 1회 복구 상태로 남는다.
+        autoClickClipboardPrepButton(prepTab.id).catch((error) => {
+          recordApprovalDispatchTrace({ step: "clipboard_auto_click_unavailable", error: String(error?.message || "auto-click-unavailable").slice(0, 240) }).catch(() => undefined);
+        });
+      } catch (error) {
+        finish(error);
+      }
+    });
+    return prepTab.id;
+  } catch (error) {
+    await chrome.tabs.remove(prepTab.id).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function recordApprovalDispatchTrace(patch) {
+  const stored = await chrome.storage.local.get("naverDraftAssistantApprovalTrace");
+  await chrome.storage.local.set({
+    naverDraftAssistantApprovalTrace: { ...(stored.naverDraftAssistantApprovalTrace || {}), ...patch, updatedAt: Date.now() },
+  });
+}
+
+async function pollApprovedDraft() {
+  const { [DEVICE_TOKEN_KEY]: deviceToken, [PAIR_TAB_ID_KEY]: pairTabId } = await chrome.storage.local.get([DEVICE_TOKEN_KEY, PAIR_TAB_ID_KEY]);
+  if (!deviceToken) return;
+  await recordApprovalDispatchTrace({ step: "polling", error: "" });
+  const response = await fetch(`${BLOGAUTO_ORIGIN}/api/extension/approved-draft`, {
+    headers: { "X-Naver-Draft-Device": deviceToken },
+    cache: "no-store",
+  });
+  if (response.status === 401) {
+    await chrome.storage.local.remove(DEVICE_TOKEN_KEY);
+    return;
+  }
+  if (!response.ok) return;
+  const payload = await response.json().catch(() => ({}));
+  if (!payload?.ok || !payload.result?.draft) return;
+  let clipboardPrepTabId = null;
+  let naverAutomationTabId = null;
+  let naverAutomationWindowId;
+  try {
+    const draft = normalizeDraft({ ...(payload.result.draft || {}), product: payload.result.product || null });
+
+    // 별도 팝업은 사용하지 않는다. 페어링한 blogauto 탭과 같은 일반 Chrome 창에
+    // 전용 자동화 탭만 열고, 완료·실패 후 자동화가 만든 탭들만 닫는다.
+    // 기존 사용자 탭은 탐색·닫기 대상이 아니다.
+    const pairedTab = Number.isInteger(pairTabId)
+      ? await chrome.tabs.get(pairTabId).catch(() => null)
+      : null;
+    const automationWindowId = Number.isInteger(pairedTab?.windowId) ? pairedTab.windowId : undefined;
+    clipboardPrepTabId = await prepareApprovedImage(draft.imageUrl, automationWindowId);
+    draft.clipboardPrepTabId = clipboardPrepTabId;
+    const createProperties = { url: "about:blank", active: true };
+    if (Number.isInteger(automationWindowId)) createProperties.windowId = automationWindowId;
+    const automationTab = await chrome.tabs.create(createProperties);
+    if (!Number.isInteger(automationTab?.id)) throw new Error("자동 발행용 네이버 전용 탭을 열지 못했습니다.");
+    naverAutomationTabId = automationTab.id;
+    draft.naverAutomationTabId = naverAutomationTabId;
+    // 전용 탭 방식에서는 창을 닫지 않는다. undefined여야 사용자 창 ID 0으로 오인되지 않는다.
+    delete draft.naverAutomationWindowId;
+    await chrome.storage.session.set({ [DRAFT_KEY]: draft });
+
+    const naverWriteUrl = String(payload.result.naver_write_url || "https://blog.naver.com/GoBlogWrite.naver?categoryNo=39");
+    await chrome.tabs.update(naverAutomationTabId, { url: naverWriteUrl, active: true });
+    const claimResponse = await fetch(`${BLOGAUTO_ORIGIN}/api/extension/approved-draft/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Naver-Draft-Device": deviceToken },
+      body: JSON.stringify({ batch_id: payload.result.batch_id || "" }),
+    });
+    if (!claimResponse.ok) throw new Error("승인 배치 완료 상태를 기록하지 못했습니다.");
+    await recordApprovalDispatchTrace({ step: "naver_automation_tab_opened", error: "", batchId: payload.result.batch_id || "" });
+  } catch (error) {
+    const errorMessage = String(error?.message || "알 수 없는 오류").slice(0, 500);
+    const batchId = String(payload?.result?.batch_id || "");
+    if (Number.isInteger(naverAutomationWindowId)) await chrome.windows.remove(naverAutomationWindowId).catch(() => undefined);
+    else if (Number.isInteger(naverAutomationTabId)) await chrome.tabs.remove(naverAutomationTabId).catch(() => undefined);
+    if (Number.isInteger(clipboardPrepTabId)) await chrome.tabs.remove(clipboardPrepTabId).catch(() => undefined);
+    await closeImageClipboardDocument();
+    if (batchId) {
+      await extensionPublishRequest('/api/extension/publish/pre-submit-failure', {
+        batch_id: batchId,
+        error_message: errorMessage,
+      }).catch(() => undefined);
+    }
+    await recordApprovalDispatchTrace({ step: "dispatch_failed", error: errorMessage, batchId });
+    throw error;
+  }
+}
+
+function startApprovalPolling() {
+  chrome.alarms.create(APPROVAL_ALARM, { periodInMinutes: 1 });
+  pollApprovedDraft().catch(() => undefined);
+}
+
+// 서비스 워커는 알람·메시지·브라우저 이벤트로 수시로 중단·재시작된다.
+// 다시 실행되는 즉시 한 번 폴링해, 확장 아이콘을 눌러야만 승인 대기열이 진행되는 문제를 없앤다.
+startApprovalPolling();
+chrome.runtime.onInstalled.addListener(startApprovalPolling);
+chrome.runtime.onStartup.addListener(startApprovalPolling);
+chrome.action.onClicked.addListener(() => {
+  // 확장 프로그램을 새로고침한 직후에도 사용자가 아이콘 한 번만 클릭하면 즉시 폴링을 재개한다.
+  startApprovalPolling();
+});
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === APPROVAL_ALARM) pollApprovedDraft().catch(() => undefined);
+});
 
 function asText(value, maxLength) {
   if (typeof value !== "string") return "";
@@ -41,6 +255,17 @@ function isNaverEditorSender(sender) {
   }
 }
 
+function normalizePublishProduct(rawProduct) {
+  if (!rawProduct || typeof rawProduct !== "object") return null;
+  const productId = asText(rawProduct.product_id, 200);
+  const productName = asText(rawProduct.product_name, 500);
+  const affiliateUrl = asText(rawProduct.affiliate_url, 2_000);
+  const categoryNo = asText(rawProduct.naver_category, 20);
+  const salePrice = Number(rawProduct.sale_price || 0);
+  if (!productId || !productName || !affiliateUrl.startsWith("https://") || categoryNo !== "39" || !Number.isInteger(salePrice) || salePrice <= 0) return null;
+  return { platform: "toss", product_id: productId, product_name: productName, sale_price: salePrice, affiliate_url: affiliateUrl, naver_category: categoryNo };
+}
+
 function normalizeDraft(rawDraft) {
   const title = asText(rawDraft?.title, 300);
   const body = asText(rawDraft?.body, 20_000);
@@ -52,6 +277,9 @@ function normalizeDraft(rawDraft) {
     body,
     tags,
     imageUrl: safeImageUrl(rawDraft?.imageUrl),
+    approvalBatchId: asText(rawDraft?.approvalBatchId, 80),
+    preflightOnly: rawDraft?.preflightOnly === true,
+    product: normalizePublishProduct(rawDraft?.product),
     createdAt: Date.now(),
     expiresAt: Date.now() + DRAFT_TTL_MS,
   };
@@ -84,6 +312,34 @@ async function click(tabId, point) {
   const payload = { x: Math.round(point.x), y: Math.round(point.y), button: "left", clickCount: 1 };
   await send(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...payload });
   await send(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...payload });
+}
+
+async function autoClickClipboardPrepButton(tabId) {
+  await chrome.debugger.attach({ tabId }, DEBUGGER_VERSION);
+  try {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const result = await send(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const button = document.getElementById("copy-image");
+          if (!button || button.disabled) return null;
+          const rect = button.getBoundingClientRect();
+          if (rect.width < 10 || rect.height < 10) return null;
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        })()`,
+        returnByValue: true,
+        awaitPromise: false
+      });
+      const point = result?.result?.value;
+      if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
+        await click(tabId, point);
+        return true;
+      }
+      await sleep(100);
+    }
+    throw new Error("원본 이미지 준비 버튼을 자동 클릭할 수 없습니다.");
+  } finally {
+    await chrome.debugger.detach({ tabId }).catch(() => undefined);
+  }
 }
 
 async function pressEnter(tabId) {
@@ -152,6 +408,21 @@ async function pressCtrlHome(tabId) {
   });
   await send(tabId, "Input.dispatchKeyEvent", {
     type: "keyUp", key: "Home", code: "Home", windowsVirtualKeyCode: 36, nativeVirtualKeyCode: 36, modifiers: 2
+  });
+  await send(tabId, "Input.dispatchKeyEvent", {
+    type: "keyUp", key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17
+  });
+}
+
+async function pressCtrlEnd(tabId) {
+  await send(tabId, "Input.dispatchKeyEvent", {
+    type: "rawKeyDown", key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17
+  });
+  await send(tabId, "Input.dispatchKeyEvent", {
+    type: "rawKeyDown", key: "End", code: "End", windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35, modifiers: 2
+  });
+  await send(tabId, "Input.dispatchKeyEvent", {
+    type: "keyUp", key: "End", code: "End", windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35, modifiers: 2
   });
   await send(tabId, "Input.dispatchKeyEvent", {
     type: "keyUp", key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17
@@ -505,16 +776,32 @@ function selectRenderedTextExpression(text) {
     for (let documentIndex = 0; documentIndex < docs.length; documentIndex += 1) {
       const doc = docs[documentIndex];
       const walker = doc.createTreeWalker(doc.body || doc, NodeFilter.SHOW_TEXT);
-      let node;
+      const textNodes = []; let node;
       while ((node = walker.nextNode())) {
-        const value = node.nodeValue || ''; const start = value.indexOf(target);
-        if (start < 0) continue;
-        const range = doc.createRange(); range.setStart(node, start); range.setEnd(node, start + target.length);
-        const selection = doc.defaultView?.getSelection?.(); if (!selection) continue;
-        selection.removeAllRanges(); selection.addRange(range);
-        const selectedLength = selection.toString().length;
-        if (selectedLength === target.length) return { selected: true, documentIndex, selectedLength };
+        if (node.nodeValue) textNodes.push(node);
       }
+      const joinedText = textNodes.map((textNode) => textNode.nodeValue || '').join('');
+      const matchStart = joinedText.indexOf(target);
+      if (matchStart < 0) continue;
+      const matchEnd = matchStart + target.length;
+      let offset = 0; let startNode = null; let startOffset = 0; let endNode = null; let endOffset = 0;
+      for (const textNode of textNodes) {
+        const length = (textNode.nodeValue || '').length;
+        const nextOffset = offset + length;
+        if (!startNode && matchStart >= offset && matchStart < nextOffset) {
+          startNode = textNode; startOffset = matchStart - offset;
+        }
+        if (!endNode && matchEnd >= offset && matchEnd <= nextOffset) {
+          endNode = textNode; endOffset = matchEnd - offset;
+        }
+        offset = nextOffset;
+      }
+      if (!startNode || !endNode) continue;
+      const range = doc.createRange(); range.setStart(startNode, startOffset); range.setEnd(endNode, endOffset);
+      const selection = doc.defaultView?.getSelection?.(); if (!selection) continue;
+      selection.removeAllRanges(); selection.addRange(range);
+      const selectedLength = selection.toString().length;
+      if (selectedLength === target.length) return { selected: true, documentIndex, selectedLength };
     }
     return { selected: false, documentIndex: -1, selectedLength: 0 };
   })()`;
@@ -625,11 +912,34 @@ function hasRenderedHrefExpression(url) {
   })()`;
 }
 
+async function waitForPropertyLinkLayerOpen(tabId, attempts = 16) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = await send(tabId, 'Runtime.evaluate', { expression: IS_PROPERTY_LINK_LAYER_OPEN, returnByValue: true, awaitPromise: false });
+    if (result?.result?.value) return true;
+    await sleep(180);
+  }
+  return false;
+}
+
 async function waitForPropertyLinkLayerClosed(tabId, attempts = 16) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const result = await send(tabId, 'Runtime.evaluate', { expression: IS_PROPERTY_LINK_LAYER_OPEN, returnByValue: true, awaitPromise: false });
     if (!result?.result?.value) return true;
     await sleep(180);
+  }
+  return false;
+}
+
+async function waitForRenderedHref(tabId, url, attempts = 16) {
+  // SmartEditor는 적용 레이어가 닫힌 뒤 비동기로 a[href]를 반영한다.
+  // 즉시 1회만 확인하면 실제 링크가 만들어지는 도중에도 실패로 처리될 수 있으므로,
+  // 승인된 URL과 정확히 일치하는 href가 생길 때까지만 짧게 대기한다.
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = await send(tabId, 'Runtime.evaluate', {
+      expression: hasRenderedHrefExpression(url), returnByValue: true, awaitPromise: false,
+    });
+    if (result?.result?.value) return true;
+    await sleep(250);
   }
   return false;
 }
@@ -670,38 +980,56 @@ async function waitForPoint(tabId, expression, attempts = 12) {
   return null;
 }
 
+async function waitForRenderedTextSelection(tabId, text, attempts = 12) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = await send(tabId, 'Runtime.evaluate', { expression: selectRenderedTextExpression(text), returnByValue: true, awaitPromise: false });
+    const selected = result?.result?.value;
+    if (selected?.selected) return selected;
+    await sleep(260);
+  }
+  return null;
+}
+
 async function insertCardlessLink(tabId, url) {
   if (!url) throw new Error("상품 링크가 비어 있습니다.");
-  // 이 SmartEditor는 선택한 URL 표시 텍스트를 링크로 바꾸는 대신 실제 URL을 뒤에 추가한다.
-  // 따라서 화면에 보이지 않는 문자 하나만 선택하고 속성 링크 도구에 URL을 넣어, 실제 일반 링크 한 개만 생성한다.
+  // 실제 성공했던 흐름: URL 문자열을 본문에 먼저 입력하지 않는다.
+  // 보이지 않는 단일 시드 문자만 선택한 뒤 SmartEditor 속성 링크에 실제 URL을 적용한다.
+  // 이 방식은 화면에서 주소가 두 번 보이던 시기에도 링크 카드 없이 정상 입력된 원본 구현이다.
   const linkSeed = "\u2060";
   await typeText(tabId, linkSeed);
-  // 숨은 input_buffer에 보내는 Shift+Home은 화면 본문의 DOM 선택 범위를 만들지 못한다.
-  // 렌더링된 비가시 자리표시자를 직접 범위 선택한 뒤, 외부 링크 카드 도구가 아닌 속성 링크 버튼만 누른다.
-  const selectionResult = await send(tabId, 'Runtime.evaluate', { expression: selectRenderedTextExpression(linkSeed), returnByValue: true, awaitPromise: false });
+  const selectionResult = await send(tabId, 'Runtime.evaluate', {
+    expression: selectRenderedTextExpression(linkSeed), returnByValue: true, awaitPromise: false,
+  });
   const selected = selectionResult?.result?.value;
   await recordLinkTrace(tabId, 'after-rendered-dom-selection');
-  if (!selected?.selected) throw new Error('렌더링된 URL 표시 텍스트의 선택 범위를 만들지 못했습니다. 비민감 진단을 복사해 주세요.');
+  if (!selected?.selected) throw new Error('복원 링크 입력에서 시드 문자 선택 범위를 만들지 못했습니다. 공개하지 않았습니다.');
   const propertyLinkPoint = await waitForPoint(tabId, FIND_PROPERTY_LINK_BUTTON, 8);
-  if (!propertyLinkPoint) throw new Error('선택 텍스트용 링크 버튼을 찾지 못했습니다. 비민감 진단을 복사해 주세요.');
+  if (!propertyLinkPoint) throw new Error('복원 링크 입력에서 속성 링크 버튼을 찾지 못했습니다. 공개하지 않았습니다.');
   await click(tabId, propertyLinkPoint);
   await sleep(250);
   await recordLinkTrace(tabId, 'after-property-link-button');
-  const layerFilled = await send(tabId, 'Runtime.evaluate', { expression: fillPropertyLinkLayerExpression(url), returnByValue: true, awaitPromise: false });
-  if (!layerFilled?.result?.value) throw new Error('선택 텍스트용 링크 입력칸을 찾지 못했습니다. 비민감 진단을 복사해 주세요.');
+  const layerFilled = await send(tabId, 'Runtime.evaluate', {
+    expression: fillPropertyLinkLayerExpression(url), returnByValue: true, awaitPromise: false,
+  });
+  if (!layerFilled?.result?.value) throw new Error('복원 링크 입력에서 링크 입력칸을 찾지 못했습니다. 공개하지 않았습니다.');
   const applyPoint = await waitForPoint(tabId, FIND_PROPERTY_LINK_APPLY, 10);
-  if (!applyPoint) throw new Error('선택 텍스트용 링크 적용 버튼이 활성화되지 않았습니다. 비민감 진단을 복사해 주세요.');
+  if (!applyPoint) throw new Error('복원 링크 입력에서 링크 적용 버튼이 활성화되지 않았습니다. 공개하지 않았습니다.');
   await click(tabId, applyPoint);
-  if (!await waitForPropertyLinkLayerClosed(tabId)) throw new Error('선택 텍스트용 링크 레이어가 닫히지 않았습니다. 비민감 진단을 복사해 주세요.');
-  const hrefResult = await send(tabId, 'Runtime.evaluate', { expression: hasRenderedHrefExpression(url), returnByValue: true, awaitPromise: false });
+  if (!await waitForPropertyLinkLayerClosed(tabId)) throw new Error('복원 링크 입력에서 링크 레이어가 닫히지 않았습니다. 공개하지 않았습니다.');
+  const hrefResult = await send(tabId, 'Runtime.evaluate', {
+    expression: hasRenderedHrefExpression(url), returnByValue: true, awaitPromise: false,
+  });
   await recordLinkTrace(tabId, 'after-property-link-apply');
-  // SmartEditor may commit the property link to its internal document model before a DOM anchor is exposed.
-  // A closed link layer confirms the apply action; do not stop later body and image input on a transient DOM miss.
+  // 원본 구현처럼 링크 레이어가 정상적으로 닫혔으면 본문·이미지 입력을 계속한다.
+  // SmartEditor의 DOM a[href] 반영은 비동기이므로 이 단일 확인 실패로 중단하지 않는다.
   const stored = await chrome.storage.session.get(LINK_TRACE_KEY);
-  await chrome.storage.session.set({ [LINK_TRACE_KEY]: { ...(stored[LINK_TRACE_KEY] || {}), renderedHrefVerified: Boolean(hrefResult?.result?.value) } });
-
-  const trace = await chrome.storage.session.get(LINK_TRACE_KEY);
-  await chrome.storage.session.set({ [LINK_TRACE_KEY]: { ...(trace[LINK_TRACE_KEY] || {}), invisibleLinkSeedUsed: true } });
+  await chrome.storage.session.set({
+    [LINK_TRACE_KEY]: {
+      ...(stored[LINK_TRACE_KEY] || {}),
+      renderedHrefVerified: Boolean(hrefResult?.result?.value),
+      invisibleLinkSeedUsed: true,
+    },
+  });
   return { invisibleLinkSeedUsed: true };
 }
 
@@ -874,7 +1202,64 @@ function verificationExpression(title, bodyMarker) {
   })()`;
 }
 
-async function waitForPastedImage(tabId, baselineImages, timeoutMs = 15000) {
+function base64FromArrayBuffer(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+function fileInputExpression(base64, mimeType, fileName) {
+  return `(() => {
+    const roots = []; const visited = new Set();
+    const visit = (root) => {
+      if (!root || visited.has(root)) return;
+      visited.add(root); roots.push(root);
+      for (const frame of root.querySelectorAll ? root.querySelectorAll('iframe') : []) { try { if (frame.contentDocument) visit(frame.contentDocument); } catch (_) {} }
+      for (const host of root.querySelectorAll ? root.querySelectorAll('*') : []) { try { if (host.shadowRoot) visit(host.shadowRoot); } catch (_) {} }
+    };
+    visit(document);
+    const inputs = roots.flatMap((root) => [...(root.querySelectorAll?.("input[type='file']") || [])])
+      .filter((input) => !input.disabled && input.getAttribute('aria-hidden') !== 'true');
+    const target = inputs.find((input) => /image|사진/i.test(input.accept || '')) || inputs[0];
+    if (!target) return { ok: false, reason: 'image_input_not_found', inputCount: inputs.length };
+    const binary = atob(${JSON.stringify(base64)});
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    const view = target.ownerDocument?.defaultView || window;
+    const file = new view.File([bytes], ${JSON.stringify(fileName)}, { type: ${JSON.stringify(mimeType)} });
+    const transfer = new view.DataTransfer();
+    transfer.items.add(file);
+    const setter = Object.getOwnPropertyDescriptor(view.HTMLInputElement.prototype, 'files')?.set;
+    if (!setter) return { ok: false, reason: 'file_input_setter_missing' };
+    setter.call(target, transfer.files);
+    target.dispatchEvent(new view.Event('input', { bubbles: true, composed: true }));
+    target.dispatchEvent(new view.Event('change', { bubbles: true, composed: true }));
+    return { ok: true, inputCount: inputs.length, accept: String(target.accept || '').slice(0, 120), fileSize: file.size };
+  })()`;
+}
+
+async function insertOriginalImageFile(tabId, imageUrl) {
+  const response = await fetch(imageUrl, { cache: "no-store" });
+  if (!response.ok) throw new Error("원본 대표 이미지를 불러오지 못했습니다.");
+  const blob = await response.blob();
+  if (!blob.type.startsWith("image/")) throw new Error("원본 대표 이미지 형식을 확인하지 못했습니다.");
+  if (!blob.size || blob.size > 12 * 1024 * 1024) throw new Error("원본 대표 이미지 파일 크기를 확인하지 못했습니다.");
+  const mimeType = blob.type === "image/png" ? "image/png" : "image/jpeg";
+  const result = await send(tabId, "Runtime.evaluate", {
+    expression: fileInputExpression(await base64FromArrayBuffer(await blob.arrayBuffer()), mimeType, `toss-product.${mimeType === "image/png" ? "png" : "jpg"}`),
+    returnByValue: true,
+    awaitPromise: false,
+  });
+  const value = result?.result?.value || {};
+  if (!value.ok) throw new Error("네이버 사진 입력 요소에 원본 이미지를 전달하지 못했습니다.");
+  return value;
+}
+
+async function waitForPastedImage(tabId, baselineImages, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await send(tabId, "Runtime.evaluate", {
@@ -926,8 +1311,13 @@ async function autoFillNaver(tabId, draft) {
     const linkResult = await insertCardlessLink(tabId, layout.shareUrl);
     await recordAutoFillTrace({ stage: "property-link-applied", invisibleLinkSeedUsed: linkResult.invisibleLinkSeedUsed });
 
-    // 이미지 붙여넣기를 후속 본문보다 먼저 완료한다. 그래야 네이버의 늦은 Ctrl+V 처리도 링크 바로 아래 위치를 사용한다.
+    // 속성 링크 레이어를 닫은 뒤에는 링크 도구가 포커스를 계속 보유할 수 있다.
+    // SmartEditor 본문을 다시 활성화하고 문서 끝으로 이동해야 Ctrl+V가 실제 본문에 전달된다.
+    await click(tabId, points.body);
+    await sleep(220);
+    await pressCtrlEnd(tabId);
     await pressEnter(tabId);
+    await sleep(140);
     await pasteImage(tabId);
     const imagePasted = await waitForPastedImage(tabId, baselineImages);
     if (!imagePasted) throw new Error("원본 대표 이미지 붙여넣기를 확인하지 못했습니다. 이미지 없는 글 입력을 중단했습니다.");
@@ -947,6 +1337,11 @@ async function autoFillNaver(tabId, draft) {
     if (!report.titlePresent) {
       throw new Error(`자동 입력이 화면에 반영되지 않았습니다. 제목=false, 탐지문서=${Number(report.documentCount || 0)}`);
     }
+    report.bodyInputCommandsCompleted = Boolean(layout.beforeImage && layout.afterImage);
+    report.imagePasted = Boolean(imagePasted);
+    report.linkApplied = Boolean(linkResult?.invisibleLinkSeedUsed);
+    report.linkDomVerified = Boolean(linkResult?.renderedHrefVerified);
+    report.shareUrl = layout.shareUrl;
     report.bodyVerificationLimited = !report.bodyPresent;
     report.imageVerificationLimited = !report.imageInserted;
     await recordAutoFillTrace({
@@ -956,6 +1351,10 @@ async function autoFillNaver(tabId, draft) {
       titlePresent: Boolean(report.titlePresent),
       bodyPresent: Boolean(report.bodyPresent),
       imageInserted: Boolean(report.imageInserted),
+      imagePasted: Boolean(report.imagePasted),
+      linkApplied: Boolean(report.linkApplied),
+      linkDomVerified: Boolean(report.linkDomVerified),
+      bodyInputCommandsCompleted: Boolean(report.bodyInputCommandsCompleted),
       bodyVerificationLimited: Boolean(report.bodyVerificationLimited),
       imageVerificationLimited: Boolean(report.imageVerificationLimited),
       documentCount: Number(report.documentCount || 0)
@@ -971,11 +1370,229 @@ async function autoFillNaver(tabId, draft) {
     throw error;
   } finally {
     await chrome.debugger.detach({ tabId }).catch(() => undefined);
+    if (Number.isInteger(draft?.clipboardPrepTabId) && draft.clipboardPrepTabId !== tabId) {
+      await chrome.tabs.remove(draft.clipboardPrepTabId).catch(() => undefined);
+    }
+    await closeImageClipboardDocument();
+  }
+}
+
+const NAVER_PUBLISH_PAGE_STATE = `(() => {
+  const visited = new Set(); const roots = [];
+  const visit = (root) => { if (!root || visited.has(root)) return; visited.add(root); roots.push(root); for (const frame of root.querySelectorAll ? root.querySelectorAll('iframe') : []) { try { if (frame.contentDocument) visit(frame.contentDocument); } catch (_) {} } for (const host of root.querySelectorAll ? root.querySelectorAll('*') : []) { try { if (host.shadowRoot) visit(host.shadowRoot); } catch (_) {} } };
+  const visible = (el) => { const style = el?.ownerDocument?.defaultView?.getComputedStyle(el); const rect = el?.getBoundingClientRect?.(); return Boolean(style && rect && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width >= 10 && rect.height >= 10); };
+  const label = (el) => ((el?.getAttribute?.('aria-label') || '') + ' ' + (el?.getAttribute?.('title') || '') + ' ' + (el?.innerText || el?.textContent || '')).replace(/\\s+/g, ' ').trim();
+  const point = (el) => { const rect = el.getBoundingClientRect(); let x = rect.left + rect.width / 2; let y = rect.top + rect.height / 2; let win = el.ownerDocument.defaultView; while (win && win !== win.top) { const frame = win.frameElement; if (!frame) break; const frameRect = frame.getBoundingClientRect(); x += frameRect.left; y += frameRect.top; win = win.parent; } return { x, y }; };
+  visit(document);
+  const controls = roots.flatMap((root) => [...(root.querySelectorAll?.('button,[role=button],a,[role=radio],label,input') || [])]).filter(visible);
+  const text = roots.map((root) => root.body?.innerText || root.textContent || '').join('\\n');
+  const publishButtons = controls.filter((el) => {
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+    const hint = (label(el) + ' ' + (el.className || '') + ' ' + (el.getAttribute('data-log-click') || '') + ' ' + (el.getAttribute('data-click') || '')).toLowerCase();
+    return label(el) === '발행' || /(^|[-_\\s])publish($|[-_\\s])|publish-button|write-publish|wp\\.publish/.test(hint);
+  });
+  const settingsOpen = /전체공개|이웃공개|비공개|발행 설정|공개 설정/.test(text);
+  const publicRadio = roots.flatMap((root) => [...(root.querySelectorAll?.('input#open_public') || [])])[0] || null;
+  const publicControl = controls.find((el) => /전체공개/.test(label(el))) || (publicRadio?.parentElement && visible(publicRadio.parentElement) ? publicRadio.parentElement : null);
+  const publicSelected = Boolean(publicRadio?.checked) || controls.some((el) => /전체공개/.test(label(el)) && (el.checked === true || el.getAttribute('aria-checked') === 'true' || /selected|checked|active|on/.test(String(el.className || ''))));
+  const category39Visible = /개이득 토스쇼핑/.test(text) || /categoryNo\\s*[=:]\\s*39/.test(text);
+  const category39Url = new URL(location.href).searchParams.get('categoryNo') === '39';
+  const category39Verified = category39Visible || category39Url;
+  const dialogPublish = publishButtons.find((el) => { const chain = []; for (let node = el; node && chain.length < 8; node = node.parentElement) chain.push(node); return chain.some((node) => /dialog|modal|layer|popup/i.test(String(node?.className || '')) || node?.getAttribute?.('role') === 'dialog'); });
+  const topPublish = publishButtons.find((el) => { const rect = el.getBoundingClientRect(); return el !== dialogPublish && rect.top >= 0 && rect.top < 180 && rect.right > window.innerWidth * 0.55; });
+  const trigger = topPublish || publishButtons.find((el) => el !== dialogPublish);
+  const confirmPublish = publishButtons.find((el) => /confirm[_-]?btn/i.test(String(el.className || ''))) || publishButtons.find((el) => { const rect = el.getBoundingClientRect(); return el !== trigger && label(el) === '발행' && rect.top >= 180; }) || dialogPublish;
+  const describe = (el) => el ? { label: label(el).slice(0, 80), className: String(el.className || '').slice(0, 180), top: Math.round(el.getBoundingClientRect().top), left: Math.round(el.getBoundingClientRect().left) } : null;
+  return { settingsOpen, publicSelected, category39Verified, trigger: trigger ? point(trigger) : null, publicControl: publicControl ? point(publicControl) : null, confirm: confirmPublish ? point(confirmPublish) : null, publishCandidates: publishButtons.slice(0, 8).map(describe) };
+})()`;
+
+async function getNaverPublishPageState(tabId) {
+  const result = await send(tabId, 'Runtime.evaluate', { expression: NAVER_PUBLISH_PAGE_STATE, returnByValue: true, awaitPromise: false });
+  return result?.result?.value || {};
+}
+
+async function waitForNaverPublishState(tabId, predicate, attempts = 16, delayMs = 300) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const state = await getNaverPublishPageState(tabId);
+    if (predicate(state)) return state;
+    await sleep(delayMs);
+  }
+  return null;
+}
+
+function assertPublishPreconditions(draft, report) {
+  if (!draft?.approvalBatchId || !draft?.product) throw new Error('승인 배치 또는 상품 검증 정보를 찾지 못했습니다. 공개하지 않았습니다.');
+  if (!report?.titlePresent || !report?.bodyInputCommandsCompleted || !report?.imagePasted || !report?.linkApplied) {
+    throw new Error('제목·본문·일반 링크·원본 이미지의 자동 입력 검증을 모두 통과하지 못했습니다. 공개하지 않았습니다.');
+  }
+  if (report.shareUrl !== draft.product.affiliate_url) throw new Error('본문 링크와 승인된 쉐어링크가 일치하지 않습니다. 공개하지 않았습니다.');
+  if (!String(draft.title || '').includes(draft.product.product_name)) throw new Error('제목과 승인 상품명이 일치하지 않습니다. 공개하지 않았습니다.');
+}
+
+async function extensionPublishRequest(path, payload) {
+  const { [DEVICE_TOKEN_KEY]: deviceToken } = await chrome.storage.local.get(DEVICE_TOKEN_KEY);
+  if (!deviceToken) throw new Error('확장 프로그램 장치 연결 정보를 찾지 못했습니다.');
+  const response = await fetch(`${BLOGAUTO_ORIGIN}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Naver-Draft-Device': deviceToken },
+    body: JSON.stringify(payload),
+    cache: 'no-store'
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body?.ok) throw new Error(body?.error || '발행 상태를 서버에 기록하지 못했습니다.');
+  return body.result || {};
+}
+
+function normalizedNaverPostUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl || '');
+    if (!/^(?:m\.)?blog\.naver\.com$/i.test(url.hostname)) return '';
+    const pathMatch = url.pathname.match(/^\/sijm\/(\d+)$/);
+    if (pathMatch) return `https://blog.naver.com/sijm/${pathMatch[1]}`;
+    const blogId = url.searchParams.get('blogId') || '';
+    const logNo = url.searchParams.get('logNo') || '';
+    if (blogId === 'sijm' && /^\d+$/.test(logNo)) return `https://blog.naver.com/sijm/${logNo}`;
+  } catch (_) {}
+  return '';
+}
+
+async function snapshotNaverTabIds() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    return new Set(tabs.map((tab) => Number(tab?.id)).filter(Number.isInteger));
+  } catch (_) {
+    return new Set();
+  }
+}
+
+async function waitForPublishedNaverUrl(tabId, tabIdsBeforeClick) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      const published = normalizedNaverPostUrl(tab?.url || '');
+      if (published) return published;
+    } catch (_) {}
+    try {
+      const tabs = await chrome.tabs.query({});
+      for (const tab of tabs) {
+        if (!Number.isInteger(tab?.id) || tab.id === tabId || tabIdsBeforeClick?.has(tab.id)) continue;
+        const published = normalizedNaverPostUrl(tab?.url || '');
+        if (published) return published;
+      }
+    } catch (_) {}
+    await sleep(500);
+  }
+  return '';
+}
+
+const CLICK_NAVER_FINAL_PUBLISH = `(() => {
+  const visited = new Set(); const roots = [];
+  const visit = (root) => { if (!root || visited.has(root)) return; visited.add(root); roots.push(root); for (const frame of root.querySelectorAll ? root.querySelectorAll('iframe') : []) { try { if (frame.contentDocument) visit(frame.contentDocument); } catch (_) {} } for (const host of root.querySelectorAll ? root.querySelectorAll('*') : []) { try { if (host.shadowRoot) visit(host.shadowRoot); } catch (_) {} } };
+  const visible = (el) => { const style = el?.ownerDocument?.defaultView?.getComputedStyle(el); const rect = el?.getBoundingClientRect?.(); return Boolean(style && rect && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width >= 10 && rect.height >= 10); };
+  const label = (el) => ((el?.getAttribute?.('aria-label') || '') + ' ' + (el?.getAttribute?.('title') || '') + ' ' + (el?.innerText || el?.textContent || '')).replace(/\\s+/g, ' ').trim();
+  visit(document);
+  const candidates = roots.flatMap((root) => [...(root.querySelectorAll?.('button,[role=button]') || [])]).filter((el) => visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true');
+  const button = candidates.find((el) => /confirm[_-]?btn/i.test(String(el.className || '')) && label(el) === '발행') || candidates.find((el) => label(el) === '발행' && el.getBoundingClientRect().top >= 180);
+  if (!button) return { clicked: false, reason: 'final_button_not_found' };
+  button.scrollIntoView({ block: 'center', inline: 'center' });
+  button.focus?.();
+  button.click();
+  return { clicked: true, className: String(button.className || '').slice(0, 160) };
+})()`;
+
+async function clickNaverFinalPublish(tabId) {
+  const result = await send(tabId, 'Runtime.evaluate', { expression: CLICK_NAVER_FINAL_PUBLISH, returnByValue: true, awaitPromise: false });
+  const value = result?.result?.value || {};
+  if (!value.clicked) throw new Error('최종 발행 버튼을 실제로 클릭하지 못했습니다. 공개하지 않았습니다.');
+  return value;
+}
+
+async function autoPublishApprovedNaver(tabId, draft, report) {
+  let attached = false;
+  let publishToken = '';
+  let publishAttempted = false;
+  try {
+    assertPublishPreconditions(draft, report);
+    await chrome.debugger.attach({ tabId }, DEBUGGER_VERSION);
+    attached = true;
+    const initialPublishState = await getNaverPublishPageState(tabId);
+    await recordAutoFillTrace({ publishStage: 'initial-controls', publishPageState: initialPublishState });
+    let state = initialPublishState?.category39Verified && initialPublishState?.trigger
+      ? initialPublishState
+      : await waitForNaverPublishState(tabId, (value) => value.category39Verified && value.trigger, 14);
+    if (!state?.category39Verified || !state?.trigger) throw new Error('카테고리 39 또는 상단 발행 버튼을 확인하지 못했습니다. 공개하지 않았습니다.');
+    await click(tabId, state.trigger);
+    state = await waitForNaverPublishState(tabId, (value) => value.settingsOpen, 10);
+    await recordAutoFillTrace({ publishStage: 'settings-open-check', publishPageState: state || await getNaverPublishPageState(tabId) });
+    if (!state?.settingsOpen) throw new Error('네이버 공개 설정 창을 확인하지 못했습니다. 공개하지 않았습니다.');
+    if (!state.publicSelected) {
+      if (!state.publicControl) throw new Error('전체공개 선택 항목을 확인하지 못했습니다. 공개하지 않았습니다.');
+      await click(tabId, state.publicControl);
+      state = await waitForNaverPublishState(tabId, (value) => value.publicSelected, 8);
+    }
+    if (!state?.publicSelected || !state?.category39Verified || !state?.confirm) {
+      throw new Error('전체공개·카테고리 39·최종 발행 버튼 검증을 통과하지 못했습니다. 공개하지 않았습니다.');
+    }
+    const begun = await extensionPublishRequest('/api/extension/publish/begin', { batch_id: draft.approvalBatchId, product: draft.product });
+    publishToken = String(begun.publish_token || '');
+    if (!publishToken) throw new Error('발행 중복 방지 잠금을 받지 못했습니다. 공개하지 않았습니다.');
+    await recordApprovalDispatchTrace({ step: 'publish-clicking', error: '', batchId: draft.approvalBatchId });
+    const tabIdsBeforeClick = await snapshotNaverTabIds();
+    await clickNaverFinalPublish(tabId);
+    const settingsClosed = await waitForNaverPublishState(tabId, (value) => !value.settingsOpen, 12, 500);
+    if (!settingsClosed) throw new Error('최종 발행 버튼 클릭 뒤 설정 창이 닫히지 않았습니다. 공개하지 않았습니다.');
+    publishAttempted = true;
+    const naverPostUrl = await waitForPublishedNaverUrl(tabId, tabIdsBeforeClick);
+    if (!naverPostUrl) throw new Error('발행 버튼 클릭 뒤 공개 URL을 확인하지 못했습니다.');
+    await extensionPublishRequest('/api/extension/publish/result', { batch_id: draft.approvalBatchId, publish_token: publishToken, outcome: 'PUBLISHED', naver_post_url: naverPostUrl });
+    await recordApprovalDispatchTrace({ step: 'published', error: '', batchId: draft.approvalBatchId, naverPostUrl });
+    return { status: 'PUBLISHED', naverPostUrl };
+  } catch (error) {
+    const message = String(error?.message || '알 수 없는 발행 오류').slice(0, 500);
+    await recordAutoFillTrace({ publishStage: 'failed', publishError: message }).catch(() => undefined);
+    if (publishToken) {
+      const outcome = publishAttempted ? 'PUBLISH_UNKNOWN' : 'FAILED_PRE_SUBMIT';
+      await extensionPublishRequest('/api/extension/publish/result', { batch_id: draft.approvalBatchId, publish_token: publishToken, outcome, error_message: message }).catch(() => undefined);
+      await recordApprovalDispatchTrace({ step: outcome === 'PUBLISH_UNKNOWN' ? 'publish_unknown' : 'publish_blocked', error: message, batchId: draft.approvalBatchId });
+      if (publishAttempted) return { status: 'PUBLISH_UNKNOWN', error: message };
+    } else {
+      await recordApprovalDispatchTrace({ step: 'publish_blocked', error: message, batchId: draft?.approvalBatchId || '' });
+    }
+    throw error;
+  } finally {
+    if (attached) await chrome.debugger.detach({ tabId }).catch(() => undefined);
   }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.target === "offscreen" || message?.type === "CLIPBOARD_PREPARE_IMAGE") return false;
   (async () => {
+    if (message?.type === "BLOGAUTO_GET_APPROVAL_TRACE") {
+      if (!isBlogAutoSender(sender)) throw new Error("허용되지 않은 확장 프로그램 진단 요청입니다.");
+      const stored = await chrome.storage.local.get("naverDraftAssistantApprovalTrace");
+      sendResponse({ ok: true, trace: stored.naverDraftAssistantApprovalTrace || null });
+      return;
+    }
+
+    if (message?.type === "BLOGAUTO_RESUME_APPROVAL_POLL") {
+      if (!isBlogAutoSender(sender)) throw new Error("허용되지 않은 승인 폴링 재개 요청입니다.");
+      startApprovalPolling();
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === "BLOGAUTO_PAIR_DEVICE") {
+      if (!isBlogAutoSender(sender)) throw new Error("허용되지 않은 확장 프로그램 연결 요청입니다.");
+      const token = asText(message.deviceToken, 200);
+      if (token.length < 24) throw new Error("확장 프로그램 연결 토큰이 올바르지 않습니다.");
+      const pairState = { [DEVICE_TOKEN_KEY]: token };
+      if (Number.isInteger(sender.tab?.id)) pairState[PAIR_TAB_ID_KEY] = sender.tab.id;
+      await chrome.storage.local.set(pairState);
+      startApprovalPolling();
+      sendResponse({ ok: true });
+      return;
+    }
+
     if (message?.type === "BLOGAUTO_STORE_DRAFT") {
       if (!isBlogAutoSender(sender)) throw new Error("허용되지 않은 초안 요청입니다.");
       const draft = normalizeDraft(message.draft);
@@ -1008,9 +1625,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!isNaverEditorSender(sender) || !sender.tab?.id) throw new Error("네이버 글쓰기 화면에서만 자동 입력할 수 있습니다.");
       const draft = await getLiveDraft();
       if (!draft || draft.id !== message.draftId) throw new Error("준비된 초안을 찾지 못했습니다.");
-      const report = await autoFillNaver(sender.tab.id, draft);
-      await chrome.storage.session.remove(DRAFT_KEY);
-      sendResponse({ ok: true, report });
+      try {
+        const report = await autoFillNaver(sender.tab.id, draft);
+        const publish = draft.preflightOnly
+          ? await extensionPublishRequest('/api/extension/publish/preflight-success', { batch_id: draft.approvalBatchId })
+          : await autoPublishApprovedNaver(sender.tab.id, draft, report);
+        await chrome.storage.session.remove(DRAFT_KEY);
+        sendResponse({ ok: true, report: { ...report, publish, preflightOnly: Boolean(draft.preflightOnly) } });
+      } catch (error) {
+        const errorMessage = String(error?.message || "자동 입력 또는 공개 전 검증 실패").slice(0, 500);
+        if (draft.approvalBatchId) {
+          await extensionPublishRequest('/api/extension/publish/pre-submit-failure', {
+            batch_id: draft.approvalBatchId,
+            error_message: errorMessage,
+          }).catch(() => undefined);
+        }
+        await chrome.storage.session.remove(DRAFT_KEY);
+        throw error;
+      } finally {
+        // 이 식별자는 pollApprovedDraft가 만든 전용 자동화 탭에만 저장된다.
+        // 사용자가 직접 연 네이버·관리자·작업 탭과 일반 Chrome 창은 절대 닫지 않는다.
+        const automationTabId = Number(draft?.naverAutomationTabId);
+        const automationWindowId = Number(draft?.naverAutomationWindowId);
+        if (Number.isInteger(automationTabId) && automationTabId === sender.tab.id) {
+          if (Number.isInteger(automationWindowId) && automationWindowId > 0) await chrome.windows.remove(automationWindowId).catch(() => undefined);
+          else await chrome.tabs.remove(automationTabId).catch(() => undefined);
+        }
+      }
       return;
     }
 

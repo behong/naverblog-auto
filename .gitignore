@@ -5,6 +5,7 @@ __pycache__/
 
 # Local credentials, browser sessions, runtime state, and generated diagnostics
 .env.*
+!.env.example
 data/browser-profile/
 _backup_*/
 .pytest_cache/
@@ -19,3 +20,9 @@ preflight-result-*.txt
 *.bak-*
 참고/
 static/downloads/naver-draft-assistant-beta-[0-9]*.zip
+
+# Local recovery exports and runtime data
+_recovery_*/
+.public-sync.zip
+data/
+diagnose_*.txt

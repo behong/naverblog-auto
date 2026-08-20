@@ -33,11 +33,11 @@ function renderPanel({ title, text, tone = "info", actionLabel, onAction }) {
   panel.innerHTML = `
     <div style="display:flex;gap:8px;align-items:flex-start">
       <strong style="color:${color}">네이버 초안 입력 도우미</strong>
-      <span style="margin-left:auto;color:#777;font-size:12px">발행하지 않음</span>
+      <span style="margin-left:auto;color:#777;font-size:12px">승인 배치 자동 발행</span>
     </div>
     <p style="margin:8px 0 12px">${escapeHtml(text)}</p>
     ${actionLabel ? `<button type="button" data-naver-draft-action style="width:100%;border:0;border-radius:8px;padding:10px 12px;background:${color};color:#fff;font-weight:700;cursor:pointer">${escapeHtml(actionLabel)}</button>` : ""}
-    <p style="margin:10px 0 0;color:#666;font-size:12px">게시·저장·예약 버튼은 이 확장 프로그램이 조작하지 않습니다.</p>
+    <p style="margin:10px 0 0;color:#666;font-size:12px">텔레그램으로 승인된 단건만 제목·본문·링크·원본 이미지·카테고리·전체공개 검증을 통과할 때 발행합니다.</p>
   `;
   const button = panel.querySelector("[data-naver-draft-action]");
   if (button && onAction) button.addEventListener("click", onAction, { once: true });
@@ -518,7 +518,7 @@ async function requestDraft() {
 async function startAutomaticFill(draft) {
   renderPanel({
     title: "자동 입력 중",
-    text: "제목·본문·원본 대표 이미지를 입력하고 있습니다. 저장·발행·예약·공개 상태는 변경하지 않습니다.",
+    text: "제목·본문·원본 대표 이미지를 입력한 뒤 안전 검증을 통과한 승인 배치만 전체공개 발행합니다.",
     tone: "info"
   });
   try {
@@ -530,7 +530,7 @@ async function startAutomaticFill(draft) {
       : " 제목·본문·이미지 반영 확인을 마쳤습니다.";
     renderPanel({
       title: "자동 입력 완료",
-      text: `제목·본문·원본 대표 이미지 입력을 요청했습니다.${verificationNote} 발행은 직접 진행해 주세요.`,
+      text: `제목·본문·원본 대표 이미지 입력을 요청했습니다.${verificationNote} 승인된 배치는 안전 검증 후 자동 발행 결과를 확인합니다.`,
       tone: "success",
       actionLabel: "비민감 진단 정보 복사",
       onAction: async (event) => {

@@ -16,6 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY --chown=appuser:appuser app.py ./app.py
 COPY --chown=appuser:appuser admin_auth.py ./admin_auth.py
 COPY --chown=appuser:appuser automation_store.py ./automation_store.py
+COPY --chown=appuser:appuser coupang_publication.py ./coupang_publication.py
+COPY --chown=appuser:appuser automation ./automation
 COPY --chown=appuser:appuser toss_open_api.py ./toss_open_api.py
 COPY --chown=appuser:appuser toss_collector.py ./toss_collector.py
 COPY --chown=appuser:appuser telegram_approval.py ./telegram_approval.py

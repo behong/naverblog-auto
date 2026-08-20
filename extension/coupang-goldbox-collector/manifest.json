@@ -5,6 +5,9 @@
   "description": "로그인 정보나 쿠키를 읽지 않고 현재 쿠팡 파트너스 골드박스 화면의 공개 상품 후보만 JSON으로 저장합니다.",
   "permissions": ["activeTab", "scripting", "downloads"],
   "host_permissions": ["https://partners.coupang.com/*"],
+  "background": {
+    "service_worker": "batch-worker.js"
+  },
   "action": {
     "default_title": "쿠팡 골드박스 후보 수집기",
     "default_popup": "popup.html"

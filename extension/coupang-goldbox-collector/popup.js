@@ -1,6 +1,7 @@
 const collectButton = document.getElementById('collect');
 const inspectButton = document.getElementById('inspect');
 const generateButton = document.getElementById('generate');
+const batchButton = document.getElementById('batch');
 const statusElement = document.getElementById('status');
 
 function setStatus(message) {
@@ -247,6 +248,26 @@ async function downloadJson(payload, filename) {
     setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   }
 }
+
+batchButton.addEventListener('click', async () => {
+  batchButton.disabled = true;
+  setStatus('정제 가능한 골드박스 후보의 파트너스 링크를 순차 생성하는 중입니다…');
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !String(tab.url || '').startsWith('https://partners.coupang.com/')) {
+      throw new Error('쿠팡 파트너스 골드박스 탭에서만 사용할 수 있습니다.');
+    }
+    const response = await chrome.runtime.sendMessage({ type: 'START_GOLDBOX_LINK_BATCH', tabId: tab.id });
+    if (!response?.ok) {
+      throw new Error(response?.error || '일괄 링크 생성을 시작하지 못했습니다.');
+    }
+    setStatus(`${response.summary.success}건 링크 결과를 저장했습니다. 실패 ${response.summary.failed}건은 결과 JSON에서 확인합니다. 네이버 발행은 실행하지 않았습니다.`);
+  } catch (error) {
+    setStatus(`저장하지 않았습니다: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    batchButton.disabled = false;
+  }
+});
 
 generateButton.addEventListener('click', async () => {
   generateButton.disabled = true;

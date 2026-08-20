@@ -145,7 +145,13 @@ collectButton.addEventListener('click', async () => {
     const frames = [];
     for (const result of results) {
       const payload = result.result || {};
-      frames.push({ frame_id: result.frameId, frame_url: payload.frame_url || '', diagnostics: payload.diagnostics || {} });
+      frames.push({
+        frame_id: result.frameId,
+        frame_url: payload.frame_url || '',
+        diagnostics: payload.diagnostics || {},
+        sample_anchors: Array.isArray(payload.sample_anchors) ? payload.sample_anchors : [],
+        sample_images: Array.isArray(payload.sample_images) ? payload.sample_images : [],
+      });
       for (const candidate of Array.isArray(payload.candidates) ? payload.candidates : []) {
         if (candidate?.product_id && !seen.has(candidate.product_id)) {
           seen.add(candidate.product_id);

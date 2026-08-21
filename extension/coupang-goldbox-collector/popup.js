@@ -249,7 +249,7 @@ function inspectCoupangProductDetail() {
   const prices = priceEntries(priceScope);
   const normalPrice = prices[0]?.value || null;
   const couponIndicators = ['쿠폰할인', '쿠폰받기', '쿠폰 받기', '쿠폰 적용', '쿠폰 적용됨', '보유 쿠폰', '쿠폰가', '개인 쿠폰', '할인쿠폰', '웰컴백 쿠폰'];
-  const wowIndicators = ['와우할인', '와우 가입 시', '와우 멤버십'];
+  const wowIndicators = ['와우쿠폰할인가', '와우 쿠폰 할인가', '와우회원가', '와우할인', '와우 가입 시', '와우 멤버십'];
   const couponDetected = couponIndicators.some((label) => priceScope.includes(label));
   const wowConditionDetected = wowIndicators.some((label) => priceScope.includes(label));
   const personalCouponDetected = ['쿠폰받기', '쿠폰 받기', '쿠폰 적용', '쿠폰 적용됨', '보유 쿠폰', '쿠폰가', '개인 쿠폰', '할인쿠폰', '웰컴백 쿠폰'].some((label) => priceScope.includes(label));
@@ -257,7 +257,9 @@ function inspectCoupangProductDetail() {
     const index = priceScope.indexOf(label);
     return index >= 0 ? prices.filter((entry) => entry.offset > index) : [];
   };
-  const generalSalePrice = pricesAfter('일반판매가').slice(0, 2)[1]?.value || prices[1]?.value || null;
+  const generalSalePrice = ['일반판매가', '일반할인가', '일반 판매가', '판매가']
+    .map((label) => pricesAfter(label).slice(0, 2)[1]?.value || null)
+    .find((value) => value) || prices[1]?.value || null;
   const wowPrice = wowIndicators
     .map((label) => pricesAfter(label).slice(0, 2)[1]?.value || null)
     .find((value) => value) || null;
@@ -285,16 +287,14 @@ function inspectCoupangProductDetail() {
     `${composition} 상품이 필요한 분`,
     '쿠폰·회원 혜택 조건을 확인할 수 있는 분',
   ] : [];
-  const automaticPublishEligible = Boolean(title && productId && composition && normalPrice && generalSalePrice && lowestConditional?.price && sourceImageCandidate && description && features.length >= 3 && audiences.length >= 3);
+  const currentPrice = [generalSalePrice, lowestConditional?.price].filter((value) => Number.isFinite(value) && value > 0).sort((left, right) => left - right)[0] || null;
+  const automaticPublishEligible = Boolean(title && productId && currentPrice && sourceImageCandidate);
   const exclusionReasons = [
     !title ? 'product_name_missing' : '',
     !productId ? 'product_id_missing' : '',
-    !composition ? 'composition_unverified' : '',
-    !description ? 'product_facts_unverified' : '',
-    features.length < 3 ? 'insufficient_product_features' : '',
+    !currentPrice ? 'current_price_unverified' : '',
     !normalPrice ? 'normal_price_unverified' : '',
-    !generalSalePrice ? 'general_sale_price_unverified' : '',
-    !lowestConditional?.price ? 'conditional_price_unverified' : '',
+    !generalSalePrice && !lowestConditional?.price ? 'sale_price_unverified' : '',
     !sourceImageCandidate ? 'source_image_unverified' : '',
   ].filter(Boolean);
   return {
@@ -312,6 +312,7 @@ function inspectCoupangProductDetail() {
     source_image_verified: false,
     normal_price: normalPrice,
     general_price: generalSalePrice,
+    current_price: currentPrice,
     lowest_conditional_price: lowestConditional?.price || null,
     conditional_price_condition: lowestConditional?.condition || '',
     conditional_prices: conditionalCandidates,

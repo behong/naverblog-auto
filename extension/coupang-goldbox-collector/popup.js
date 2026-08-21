@@ -180,7 +180,7 @@ function scrapeGoldboxCandidates() {
     },
     sample_anchors: sampleAnchors,
     sample_images: sampleImages,
-    candidates,
+    candidates: candidates.sort((left, right) => (left.displayed_sale_price || left.displayed_price || Number.MAX_SAFE_INTEGER) - (right.displayed_sale_price || right.displayed_price || Number.MAX_SAFE_INTEGER)),
   };
 }
 

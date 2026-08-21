@@ -211,7 +211,7 @@ async function extractAutoDetail(tabId) {
     const id = location.pathname.match(/\/vp\/products\/(\d+)/)?.[1] || '';
     const prices = [...text.matchAll(/(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)\s*원/g)].map((m) => Number(m[1].replace(/,/g, ''))).filter((v) => v > 0);
     const uniquePrices = [...new Set(prices)];
-    const imageUrls = [...document.querySelectorAll('img')].map((img) => img.currentSrc || img.src || img.getAttribute('data-src') || '').filter((url, i, all) => /^https:\/\/.*coupangcdn\.com\//i.test(url) && !url.includes('/thumbnails/remote/') && all.indexOf(url) === i);
+    const imageUrls = [...document.querySelectorAll('.prod-image-container img, .prod-image img, img[class*="prod-image"], img[class*="product-image"], meta[property="og:image"]')].map((node) => node.getAttribute?.('content') || node.currentSrc || node.src || node.getAttribute?.('data-src') || '').filter((url, i, all) => /^https:\/\/.*coupangcdn\.com\//i.test(url) && !url.includes('/thumbnails/remote/') && !/(\/common\/|logo|sprite|icon)/i.test(url) && all.indexOf(url) === i);
     const composition = clean((text.match(/(?:개당 중량\s*×\s*수량|중량\s*×\s*수량):\s*([^\n]{1,80})/i) || [])[1] || (title.match(/\d+(?:\.\d+)?\s*(?:kg|g|L|ml|개|입|팩|세트)/i) || [])[0] || '');
     const condition = /와우/.test(text) ? '와우회원 혜택 적용 시' : (/쿠폰/.test(text) ? '쿠폰 적용 시' : '');
     return { product_id: id, product_name: title, composition, product_page_url: location.href, normal_price: uniquePrices[0] || 0, sale_price: uniquePrices[1] || uniquePrices[0] || 0, conditional_price: uniquePrices[2] || uniquePrices[1] || uniquePrices[0] || 0, price_condition: condition, source_image_url: imageUrls[0] || '', source_image_urls: imageUrls.slice(0, 4), features: [], audiences: [], source_image_verified: false };
@@ -219,7 +219,7 @@ async function extractAutoDetail(tabId) {
 }
 
 async function verifyAutoImage(url) {
-  if (!/^https:\/\/.*coupangcdn\.com\//i.test(String(url || ''))) return false;
+  if (!/^https:\/\/.*coupangcdn\.com\//i.test(String(url || '')) || /(\/common\/|logo|sprite|icon)/i.test(String(url || ''))) return false;
   try {
     const response = await fetch(url, { cache: 'no-store', credentials: 'omit' });
     const contentType = String(response.headers.get('content-type') || '').toLowerCase();

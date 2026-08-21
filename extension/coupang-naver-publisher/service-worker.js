@@ -1468,7 +1468,15 @@ const SELECT_COUPANG_CATEGORY = `(() => {
   const label = (el) => ((el?.getAttribute?.('aria-label') || '') + ' ' + (el?.getAttribute?.('title') || '') + ' ' + (el?.innerText || el?.textContent || '')).replace(/\\s+/g, ' ').trim();
   visit(document);
   const candidates = roots.flatMap((root) => [...(root.querySelectorAll?.('[role="option"],[role="menuitem"],li,button,a,div,span,[data-category-name],[data-category-no],[data-value]') || [])]).filter(visible);
-  const option = candidates.find((el) => /개이득 쿠팡쇼핑/.test(label(el)) || String(el.getAttribute?.('data-category-name') || '') === '개이득 쿠팡쇼핑' || String(el.getAttribute?.('data-category-no') || '') === '42' || String(el.getAttribute?.('value') || '') === '42');
+  const target = '개이득 쿠팡쇼핑';
+  const exactCandidates = candidates.filter((el) => {
+    const text = label(el);
+    return text === target || String(el.getAttribute?.('data-category-name') || '') === target || String(el.getAttribute?.('data-category-no') || '') === '42' || String(el.getAttribute?.('data-value') || '') === '42' || String(el.getAttribute?.('value') || '') === '42';
+  });
+  const option = exactCandidates.sort((a, b) => {
+    const priority = (el) => /^(LI|BUTTON|A)$/.test(el.tagName) || el.getAttribute?.('role') === 'option' || el.hasAttribute?.('data-category-name') || el.hasAttribute?.('data-category-no') ? 0 : 1;
+    return priority(a) - priority(b) || label(a).length - label(b).length;
+  })[0] || candidates.filter((el) => /개이득 쿠팡쇼핑/.test(label(el))).sort((a, b) => label(a).length - label(b).length)[0];
   if (!option) return { selected: false, reason: 'coupang_category_option_not_found' };
   const rect = option.getBoundingClientRect();
   let x = rect.left + rect.width / 2; let y = rect.top + rect.height / 2;

@@ -200,7 +200,8 @@ async function pollApprovedDraft() {
     delete draft.naverAutomationWindowId;
     await chrome.storage.session.set({ [DRAFT_KEY]: draft });
 
-    const naverWriteUrl = String(payload.result.naver_write_url || "https://blog.naver.com/GoBlogWrite.naver?categoryNo=42");
+    // 쿠팡 승인 배치는 서버가 오래된 토스 글쓰기 주소를 반환해도 쿠팡 카테고리 42로만 연다.
+    const naverWriteUrl = "https://blog.naver.com/GoBlogWrite.naver?categoryNo=42";
     await chrome.tabs.update(naverAutomationTabId, { url: naverWriteUrl, active: true });
     await recordApprovalDispatchTrace({ step: "naver_automation_tab_opened", error: "", batchId: payload.result.batch_id || "" });
   } catch (error) {

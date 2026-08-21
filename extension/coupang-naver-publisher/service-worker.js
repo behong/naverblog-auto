@@ -1546,14 +1546,16 @@ async function autoPublishApprovedNaver(tabId, draft, report) {
     attached = true;
     const initialPublishState = await getNaverPublishPageState(tabId);
     await recordAutoFillTrace({ publishStage: 'initial-controls', publishPageState: initialPublishState });
-    let state = initialPublishState?.category42Verified && initialPublishState?.trigger
+    // 카테고리는 발행 설정 패널에서 사용자가 선택한다. 초기 글쓰기 화면에서는 URL이나 카테고리 텍스트가 아직 노출되지 않을 수 있으므로 상단 발행 버튼만 먼저 확인한다.
+    let state = initialPublishState?.trigger
       ? initialPublishState
-      : await waitForNaverPublishState(tabId, (value) => value.category42Verified && value.trigger, 14);
-    if (!state?.category42Verified || !state?.trigger) throw new Error('카테고리 42 또는 상단 발행 버튼을 확인하지 못했습니다. 공개하지 않았습니다.');
+      : await waitForNaverPublishState(tabId, (value) => value.trigger, 14);
+    if (!state?.trigger) throw new Error('상단 발행 버튼을 확인하지 못했습니다. 공개하지 않았습니다.');
     await click(tabId, state.trigger);
     state = await waitForNaverPublishState(tabId, (value) => value.settingsOpen, 10);
     await recordAutoFillTrace({ publishStage: 'settings-open-check', publishPageState: state || await getNaverPublishPageState(tabId) });
     if (!state?.settingsOpen) throw new Error('네이버 공개 설정 창을 확인하지 못했습니다. 공개하지 않았습니다.');
+    if (!state?.category42Verified) throw new Error('발행 설정에서 쿠팡 카테고리 선택을 확인하지 못했습니다. 공개하지 않았습니다.');
     if (!state.publicSelected) {
       if (!state.publicControl) throw new Error('전체공개 선택 항목을 확인하지 못했습니다. 공개하지 않았습니다.');
       await click(tabId, state.publicControl);

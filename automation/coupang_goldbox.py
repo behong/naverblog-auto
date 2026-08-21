@@ -4,9 +4,6 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 
-TRAVEL_KEYWORDS = ("리조트", "숙박", "호텔", "여행", "평창", "제천", "항공")
-
-
 @dataclass(frozen=True)
 class GoldboxPreview:
     candidate_id: str
@@ -67,9 +64,6 @@ def normalize_goldbox_candidates(raw_candidates: Iterable[object]) -> tuple[list
         seen.add(candidate_id)
         if not name or "…" in name or "..." in name:
             summary["excluded_incomplete_title"] += 1
-            continue
-        if any(keyword in name for keyword in TRAVEL_KEYWORDS):
-            summary["excluded_travel"] += 1
             continue
         if normal_price is None or sale_price is None or normal_price < sale_price:
             summary["excluded_price"] += 1

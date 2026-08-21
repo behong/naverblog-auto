@@ -65,8 +65,6 @@ def parse_coupang_partner_link_result(payload: object) -> dict[str, Any]:
     image_url = _clean(query.get("product[image]", [""])[0])
     if not title or not image_url.startswith("https://") or "coupangcdn.com/" not in image_url.lower():
         raise CoupangLinkResultError("상품명 또는 쿠팡 CDN 이미지를 확인하지 못했습니다.")
-    if _clean(query.get("product[travel]", [""])[0]).lower() == "true":
-        raise CoupangLinkResultError("여행 상품은 자동 발행 후보에서 제외합니다.")
 
     urls = [_valid_affiliate_url(value) for value in (result.get("generated_urls") or [])]
     # A coupa.ng URL is the shortest verified affiliate URL, otherwise retain the first link.coupang.com URL.

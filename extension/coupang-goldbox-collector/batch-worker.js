@@ -1,6 +1,5 @@
 const GOLDBOX_URL = 'https://partners.coupang.com/#affiliate/ws/best/goldbox';
-const MAX_BATCH_SIZE = 12;
-const TRAVEL_KEYWORDS = ['리조트', '숙박', '호텔', '여행', '평창', '제천', '항공'];
+const MAX_BATCH_SIZE = 20;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -39,8 +38,7 @@ function encodeDataUrl(payload) {
 }
 
 function enumerateGoldboxCandidates() {
-  const maxBatchSize = 12;
-  const travelKeywords = ['리조트', '숙박', '호텔', '여행', '평창', '제천', '항공'];
+  const maxBatchSize = 20;
   const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const imageUrl = (image) => image.currentSrc || image.getAttribute('src') || image.getAttribute('data-src') || '';
   const previewId = (value) => {
@@ -62,7 +60,7 @@ function enumerateGoldboxCandidates() {
     const name = clean(first ? detail.slice(0, first.index).replace(/\d{1,3}%\s*$/, '') : '');
     const prices = priceMatches.map((match) => Number(match[0].replace(/[^0-9]/g, ''))).filter((value) => value > 0);
     const url = imageUrl(image);
-    if (!name || !url || !prices.length || name.includes('…') || travelKeywords.some((keyword) => name.includes(keyword))) continue;
+    if (!name || !url || !prices.length || name.includes('…')) continue;
     products.push({
       candidate_id: previewId(`${name}|${prices[0]}|${prices[prices.length - 1]}`),
       product_name: name,

@@ -227,14 +227,13 @@ function inspectCoupangProductDetail() {
     .filter((entry) => entry.value > 0 && !entry.unit_price);
   const text = clean(document.body.innerText);
   const productId = new URL(location.href).pathname.match(/\/vp\/products\/(\d+)/)?.[1] || '';
-  const factLabels = ['소비기한\\(또는 유통기한\\)', '보관방법', '개당 중량', '부위', '절단 형태', '원산지', '식품의 유형', '제조년월일', '크기', '색상', '재질'];
+  const factLabels = ['소비기한\\(또는 유통기한\\)', '보관방법', '개당 중량', '부위', '절단 형태', '원산지', '식품의 유형', '제조년월일', '크기', '색상', '재질', '사용대상', '장점', '제형', '총 수량', '용량', '구성'];
   const labelPattern = factLabels.join('|');
   const productFacts = factLabels.map((label) => {
     const match = text.match(new RegExp(`(${label}):\\s*(.+?)(?=\\s+(?:${labelPattern}):|\\s+쿠팡상품번호:|$)`, 'i'));
     return match ? `${match[1].replace(/\\\\/g, '')}: ${clean(match[2]).slice(0, 120)}` : '';
   }).filter(Boolean).slice(0, 4);
   const compositionMatch = text.match(/중량\\s*×\\s*수량:\\s*(.+?)(?=\\s+(?:적립|쿠팡캐시|쿠페이|수량빼기|소비기한|보관방법|개당 중량|쿠팡상품번호):|$)/);
-  const composition = clean(compositionMatch?.[1] || '');
   const titleCandidates = [
     document.querySelector('.prod-buy-header__title')?.textContent,
     document.querySelector('h1')?.textContent,
@@ -242,6 +241,8 @@ function inspectCoupangProductDetail() {
     document.title,
   ].map(clean).filter(Boolean);
   const title = titleCandidates.find((value) => value.length > 2 && !/^쿠팡$/i.test(value)) || '';
+  const titleCompositionMatch = title.match(/(?:\d+(?:\.\d+)?\s*(?:g|kg|ml|L|개|정|매|입|세트|팩|병)(?:\s*[,x×+]\s*\d+\s*(?:개|정|매|입|세트|팩|병))?)/i);
+  const composition = clean(compositionMatch?.[1] || titleCompositionMatch?.[0] || '');
   const productStart = title ? text.indexOf(title) : -1;
   const productEndMarker = productStart >= 0 ? text.indexOf('쿠팡상품번호:', productStart) : -1;
   const priceScope = productStart >= 0 ? text.slice(productStart, productEndMarker >= 0 ? productEndMarker : productStart + 1800) : text.slice(0, 1800);

@@ -33,11 +33,13 @@ class CoupangPartnerLinkTests(unittest.TestCase):
         with self.assertRaisesRegex(CoupangLinkResultError, "파트너스 링크"):
             parse_coupang_partner_link_result(self._payload(generated_urls=["https://example.com/x"]))
 
-    def test_rejects_travel_products(self):
+    def test_accepts_travel_products_for_detail_verification(self):
         payload = self._payload()
         payload["frames"][0]["result"]["page_url"] = payload["frames"][0]["result"]["page_url"].replace("travel%5D=false", "travel%5D=true")
-        with self.assertRaisesRegex(CoupangLinkResultError, "여행 상품"):
-            parse_coupang_partner_link_result(payload)
+        result = parse_coupang_partner_link_result(payload)
+        self.assertEqual(result["product_id"], "8174473713")
+        self.assertTrue(result["requires_product_detail_verification"])
+        self.assertTrue(result["requires_conditional_price_verification"])
 
 
 if __name__ == "__main__":

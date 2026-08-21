@@ -719,6 +719,8 @@ class AppHandler(BaseHTTPRequestHandler):
 
         if parsed.path in {"/admin", "/admin/"}:
             relative = "admin.html"
+        elif parsed.path in {"/admin/coupang", "/admin/coupang/"}:
+            relative = "admin-coupang.html"
         elif parsed.path in {"/admin/setup", "/admin/setup/"}:
             relative = "admin-setup.html"
         else:
@@ -736,7 +738,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if content_type.startswith("text/") or content_type in {"application/javascript", "application/json"}:
             content_type += "; charset=utf-8"
         cache_headers: dict[str, str] = {}
-        if relative in {"admin.html", "admin.js", "admin-setup.html", "admin-setup.js", "internal-toss.css"}:
+        if relative in {"admin.html", "admin.js", "admin-coupang.html", "admin-coupang.js", "admin-setup.html", "admin-setup.js", "internal-toss.css"}:
             cache_headers["Cache_Control"] = "no-store, max-age=0"
         self._send_bytes(file_path.read_bytes(), content_type, **cache_headers)
 

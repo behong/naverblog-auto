@@ -15,9 +15,6 @@
   const collectionStatus = document.querySelector("#collectionStatus");
   const productRows = document.querySelector("#productRows");
   const productCount = document.querySelector("#productCount");
-  const pairCoupangCollector = document.querySelector("#pairCoupangCollector");
-  const pairCoupangPublisher = document.querySelector("#pairCoupangPublisher");
-  const coupangConnectionStatus = document.querySelector("#coupangConnectionStatus");
 
   let csrfToken = "";
 
@@ -31,8 +28,6 @@
     collectProducts.disabled = busy;
     logout.disabled = busy;
     publisherForm.querySelector("button[type=submit]").disabled = busy;
-    pairCoupangCollector.disabled = busy;
-    pairCoupangPublisher.disabled = busy;
     productRows.querySelectorAll("button[data-issue-id], button[data-copy-url], button[data-prepare-draft]").forEach((button) => {
       button.disabled = busy;
     });
@@ -436,32 +431,6 @@
       target.disabled = false;
       target.textContent = "링크 발급";
       setStatus(collectionStatus, error.message || "쉐어링크를 발급하지 못했습니다.", "error");
-    }
-  });
-
-  pairCoupangCollector.addEventListener("click", async () => {
-    setBusy(true);
-    setStatus(coupangConnectionStatus, "쿠팡 골드박스 수집기를 연결하는 중입니다.");
-    try {
-      await pairCoupangCollectorDevice();
-      setStatus(coupangConnectionStatus, "쿠팡 골드박스 수집기가 연결됐습니다. 검증된 상품만 텔레그램 승인 요청으로 보낼 수 있습니다.", "success");
-    } catch (error) {
-      setStatus(coupangConnectionStatus, error.message || "쿠팡 수집기 연결에 실패했습니다.", "error");
-    } finally {
-      setBusy(false);
-    }
-  });
-
-  pairCoupangPublisher.addEventListener("click", async () => {
-    setBusy(true);
-    setStatus(coupangConnectionStatus, "쿠팡 네이버 발행 확장을 연결하는 중입니다.");
-    try {
-      await pairCoupangPublisherDevice();
-      setStatus(coupangConnectionStatus, "쿠팡 네이버 발행 확장이 연결됐습니다. 텔레그램 승인 후 카테고리 42 등록을 준비합니다.", "success");
-    } catch (error) {
-      setStatus(coupangConnectionStatus, error.message || "쿠팡 발행 확장 연결에 실패했습니다.", "error");
-    } finally {
-      setBusy(false);
     }
   });
 

@@ -136,7 +136,7 @@ async function recordApprovalDispatchTrace(patch) {
   });
 }
 
-async function pollApprovedDraft() {
+async function pollApprovedDraftOnce() {
   const { [DEVICE_TOKEN_KEY]: deviceToken, [PAIR_TAB_ID_KEY]: pairTabId } = await chrome.storage.local.get([DEVICE_TOKEN_KEY, PAIR_TAB_ID_KEY]);
   if (!deviceToken) return;
   await recordApprovalDispatchTrace({ step: "polling", error: "" });
@@ -201,6 +201,16 @@ async function pollApprovedDraft() {
     await recordApprovalDispatchTrace({ step: "dispatch_failed", error: errorMessage, batchId });
     throw error;
   }
+}
+
+let activeApprovalPoll = null;
+
+async function pollApprovedDraft() {
+  if (activeApprovalPoll) return activeApprovalPoll;
+  activeApprovalPoll = pollApprovedDraftOnce().finally(() => {
+    activeApprovalPoll = null;
+  });
+  return activeApprovalPoll;
 }
 
 function startApprovalPolling() {
@@ -1287,7 +1297,14 @@ async function verifyApplied(tabId, draft, baselineImages) {
 }
 
 async function autoFillNaver(tabId, draft) {
-  await recordAutoFillTrace({ stage: "starting", completed: false, failed: false });
+  await recordAutoFillTrace({
+    stage: "starting",
+    completed: false,
+    failed: false,
+    error: "",
+    publishError: "",
+    publishStage: "",
+  });
   await chrome.debugger.attach({ tabId }, DEBUGGER_VERSION);
   try {
     await dismissExistingDraftDialog(tabId);

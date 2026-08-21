@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "네이버 초안 입력 도우미",
-  "version": "0.5.41",
+  "version": "0.5.42",
   "description": "blogauto.hongzi.us에서 승인된 초안을 검증 후 네이버에 전체공개 발행하고 공개 URL을 기록합니다.",
   "permissions": ["storage", "tabs", "debugger", "alarms", "offscreen", "clipboardWrite"],
   "host_permissions": [

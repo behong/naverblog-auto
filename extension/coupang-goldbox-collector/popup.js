@@ -248,20 +248,22 @@ function inspectCoupangProductDetail() {
   const priceScope = productStart >= 0 ? text.slice(productStart, productEndMarker >= 0 ? productEndMarker : productStart + 1800) : text.slice(0, 1800);
   const prices = priceEntries(priceScope);
   const normalPrice = prices[0]?.value || null;
-  const generalSalePrice = prices[1]?.value || null;
   const couponIndicators = ['쿠폰할인', '쿠폰받기', '쿠폰 받기', '쿠폰 적용', '쿠폰 적용됨', '보유 쿠폰', '쿠폰가', '개인 쿠폰', '할인쿠폰', '웰컴백 쿠폰'];
   const wowIndicators = ['와우할인', '와우 가입 시', '와우 멤버십'];
   const couponDetected = couponIndicators.some((label) => priceScope.includes(label));
   const wowConditionDetected = wowIndicators.some((label) => priceScope.includes(label));
   const personalCouponDetected = ['쿠폰받기', '쿠폰 받기', '쿠폰 적용', '쿠폰 적용됨', '보유 쿠폰', '쿠폰가', '개인 쿠폰', '할인쿠폰', '웰컴백 쿠폰'].some((label) => priceScope.includes(label));
-  const couponLabelIndex = priceScope.indexOf('쿠폰할인');
-  const couponPrice = couponLabelIndex >= 0
-    ? prices.filter((entry) => entry.offset < couponLabelIndex).slice(-1)[0]?.value || null
-    : null;
-  const wowIndex = wowIndicators.map((label) => priceScope.indexOf(label)).filter((index) => index >= 0).sort((a, b) => a - b)[0];
-  const wowPrice = wowIndex >= 0 ? prices.find((entry) => entry.offset > wowIndex)?.value || null : null;
+  const pricesAfter = (label) => {
+    const index = priceScope.indexOf(label);
+    return index >= 0 ? prices.filter((entry) => entry.offset > index) : [];
+  };
+  const generalSalePrice = pricesAfter('일반판매가').slice(0, 2)[1]?.value || prices[1]?.value || null;
+  const wowPrice = wowIndicators
+    .map((label) => pricesAfter(label).slice(0, 2)[1]?.value || null)
+    .find((value) => value) || null;
+  const couponPrice = ['쿠폰가', '쿠폰 적용가', '쿠폰 적용됨'].map((label) => pricesAfter(label)[0]?.value || null).find((value) => value) || null;
   const conditionalCandidates = [
-    couponPrice ? { price: couponPrice, condition: personalCouponDetected ? '쿠폰 적용 시' : '쿠폰 할인 적용 시', type: personalCouponDetected ? 'personal_coupon' : 'coupon' } : null,
+    couponPrice ? { price: couponPrice, condition: '쿠폰 적용 시', type: personalCouponDetected ? 'personal_coupon' : 'coupon' } : null,
     wowPrice ? { price: wowPrice, condition: '와우회원 혜택 적용 시', type: 'wow_member' } : null,
   ].filter(Boolean);
   const lowestConditional = conditionalCandidates.sort((left, right) => left.price - right.price)[0] || null;

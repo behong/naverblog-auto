@@ -7,6 +7,8 @@ const AUTOFILL_TRACE_KEY = "coupangNaverPublisherAutoFillTrace";
 const DEVICE_TOKEN_KEY = "coupangNaverPublisherDeviceToken";
 const PAIR_TAB_ID_KEY = "coupangNaverPublisherPairTabId";
 const APPROVAL_ALARM = "coupangNaverPublisherApprovalPoll";
+const COUPANG_PUBLISH_INTERVAL_MS = 30 * 60 * 1000;
+const LAST_COUPANG_PUBLISH_AT_KEY = "coupangLastPublishAt";
 const clipboardPrepPorts = new Map();
 let imageClipboardPort = null;
 let creatingImageClipboardDocument = null;
@@ -149,6 +151,9 @@ async function recordApprovalDispatchTrace(patch) {
 
 async function pollApprovedDraft() {
   if (approvalDispatchInFlight) return;
+  const rateLimit = await chrome.storage.local.get(LAST_COUPANG_PUBLISH_AT_KEY);
+  const lastPublishAt = Number(rateLimit[LAST_COUPANG_PUBLISH_AT_KEY] || 0);
+  if (lastPublishAt > 0 && Date.now() - lastPublishAt < COUPANG_PUBLISH_INTERVAL_MS) return;
   approvalDispatchInFlight = true;
   try {
     const { [DEVICE_TOKEN_KEY]: deviceToken, [PAIR_TAB_ID_KEY]: pairTabId } = await chrome.storage.local.get([DEVICE_TOKEN_KEY, PAIR_TAB_ID_KEY]);
@@ -1683,6 +1688,7 @@ async function autoPublishApprovedNaver(tabId, draft, report) {
     const naverPostUrl = await waitForPublishedNaverUrl(tabId, tabIdsBeforeClick);
     if (!naverPostUrl) throw new Error('발행 버튼 클릭 뒤 공개 URL을 확인하지 못했습니다.');
     await extensionPublishRequest('/api/coupang/extension/publish/result', { batch_id: draft.approvalBatchId, publish_token: publishToken, outcome: 'PUBLISHED', naver_post_url: naverPostUrl });
+    await chrome.storage.local.set({ [LAST_COUPANG_PUBLISH_AT_KEY]: Date.now() });
     await recordApprovalDispatchTrace({ step: 'published', error: '', batchId: draft.approvalBatchId, naverPostUrl });
     return { status: 'PUBLISHED', naverPostUrl };
   } catch (error) {

@@ -1,4 +1,5 @@
 const GOLDBOX_URL = 'https://partners.coupang.com/#affiliate/ws/best/goldbox';
+const BLOGAUTO_ORIGIN = 'https://blogauto.hongzi.us';
 const MAX_BATCH_SIZE = 20;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -128,7 +129,7 @@ async function execute(tabId, func, args = []) {
   return results[0]?.result || null;
 }
 
-async function runBatch(tabId) {
+async function runBatch(tabId, options = {}) {
   // The previous single-link test leaves the tab on a link-generation route; always reset it first.
   await chrome.tabs.update(tabId, { url: GOLDBOX_URL });
   await waitForUrl(tabId, /#affiliate\/ws\/best\/goldbox/);
@@ -169,14 +170,127 @@ async function runBatch(tabId) {
     coupangGoldboxPartnerLinkResults: results,
     coupangGoldboxPartnerLinkResultsUpdatedAt: Date.now(),
   });
-  await chrome.downloads.download({
-    url: encodeDataUrl(payload),
-    filename: `coupang-goldbox-batch-link-results-${new Date().toISOString().slice(0, 10)}.json`,
-    saveAs: true,
-  });
+  if (options.save !== false) {
+    await chrome.downloads.download({
+      url: encodeDataUrl(payload),
+      filename: `coupang-goldbox-batch-link-results-${new Date().toISOString().slice(0, 10)}.json`,
+      saveAs: true,
+    });
+  }
   setProgress(0, 0);
   return { total: initial.length, success: results.filter((item) => item.ok).length, failed: results.filter((item) => !item.ok).length };
 }
+
+let scheduledRunActive = false;
+
+function nextLocalOccurrence(hour) {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(hour, 0, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return next.getTime();
+}
+
+async function ensureGoldboxTab() {
+  const tabs = await chrome.tabs.query({ url: ['https://partners.coupang.com/*'] });
+  const existing = tabs.find((tab) => Number.isInteger(tab.id));
+  if (existing?.id) {
+    await chrome.tabs.update(existing.id, { active: true, url: GOLDBOX_URL });
+    return existing.id;
+  }
+  const created = await chrome.tabs.create({ url: GOLDBOX_URL, active: false });
+  if (!created.id) throw new Error('골드박스 자동화 탭을 만들지 못했습니다.');
+  return created.id;
+}
+
+async function extractAutoDetail(tabId) {
+  return execute(tabId, () => {
+    const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const text = clean(document.body.innerText);
+    const title = clean(document.querySelector('.prod-buy-header__title')?.textContent || document.querySelector('h1')?.textContent || document.title).replace(/\s*[|｜-]\s*쿠팡.*$/i, '');
+    const id = location.pathname.match(/\/vp\/products\/(\d+)/)?.[1] || '';
+    const prices = [...text.matchAll(/(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)\s*원/g)].map((m) => Number(m[1].replace(/,/g, ''))).filter((v) => v > 0);
+    const uniquePrices = [...new Set(prices)];
+    const imageUrls = [...document.querySelectorAll('img')].map((img) => img.currentSrc || img.src || img.getAttribute('data-src') || '').filter((url, i, all) => /^https:\/\/.*coupangcdn\.com\//i.test(url) && !url.includes('/thumbnails/remote/') && all.indexOf(url) === i);
+    const composition = clean((text.match(/(?:개당 중량\s*×\s*수량|중량\s*×\s*수량):\s*([^\n]{1,80})/i) || [])[1] || (title.match(/\d+(?:\.\d+)?\s*(?:kg|g|L|ml|개|입|팩|세트)/i) || [])[0] || '');
+    const condition = /와우/.test(text) ? '와우회원 혜택 적용 시' : (/쿠폰/.test(text) ? '쿠폰 적용 시' : '');
+    return { product_id: id, product_name: title, composition, product_page_url: location.href, normal_price: uniquePrices[0] || 0, sale_price: uniquePrices[1] || uniquePrices[0] || 0, conditional_price: uniquePrices[2] || uniquePrices[1] || uniquePrices[0] || 0, price_condition: condition, source_image_url: imageUrls[0] || '', source_image_urls: imageUrls.slice(0, 4), features: [], audiences: [], source_image_verified: false };
+  });
+}
+
+async function verifyAutoImage(url) {
+  if (!/^https:\/\/.*coupangcdn\.com\//i.test(String(url || ''))) return false;
+  try {
+    const response = await fetch(url, { cache: 'no-store', credentials: 'omit' });
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    return response.ok && contentType.startsWith('image/') && (await response.blob()).size >= 4096;
+  } catch (_) { return false; }
+}
+
+async function requestAutoApproval(detail, affiliateUrl, deviceToken) {
+  const imageVerified = await verifyAutoImage(detail.source_image_url);
+  if (!imageVerified) return { ok: false, error: '원본 대표 이미지를 검증하지 못했습니다.' };
+  const prices = [detail.normal_price, detail.sale_price, detail.conditional_price].map(Number).filter((value) => value > 0).sort((a, b) => b - a);
+  const candidate = {
+    product_id: detail.product_id,
+    product_name: detail.product_name,
+    composition: detail.composition || '상품 구성은 상세 페이지에서 확인',
+    product_url: detail.product_page_url,
+    affiliate_url: affiliateUrl,
+    original_image_url: detail.source_image_url,
+    normal_price: prices[0],
+    sale_price: prices[1] || prices[0],
+    conditional_price: prices[2] || prices[1] || prices[0],
+    price_condition: detail.price_condition || '판매 조건은 상세 페이지에서 확인',
+    description: '', features: [], audiences: [], source_image_verified: true,
+  };
+  const response = await fetch(`${BLOGAUTO_ORIGIN}/api/coupang/collector/approval`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Naver-Draft-Device': deviceToken }, body: JSON.stringify({ candidate, ttl_minutes: 30 }), cache: 'no-store' });
+  const body = await response.json().catch(() => ({}));
+  return response.ok && body?.ok ? { ok: true } : { ok: false, error: body?.error || '텔레그램 승인 요청을 만들지 못했습니다.' };
+}
+
+async function runScheduledGoldbox(limit = 4) {
+  if (scheduledRunActive) return { ok: false, error: '이미 자동 수집이 실행 중입니다.' };
+  scheduledRunActive = true;
+  try {
+    const { coupangCollectorDeviceToken: deviceToken } = await chrome.storage.local.get('coupangCollectorDeviceToken');
+    if (String(deviceToken || '').length < 24) throw new Error('쿠팡 수집기 연결 정보가 없습니다. 관리자 페이지에서 한 번 연결해 주세요.');
+    const tabId = await ensureGoldboxTab();
+    const summary = await runBatch(tabId, { save: false });
+    const stored = await chrome.storage.local.get('coupangGoldboxPartnerLinkResults');
+    const results = Array.isArray(stored.coupangGoldboxPartnerLinkResults) ? stored.coupangGoldboxPartnerLinkResults.filter((item) => item?.ok && item?.product_id && item?.generated_urls?.[0]) : [];
+    const outcomes = [];
+    for (const item of results.slice(0, Math.max(1, Math.min(10, Number(limit) || 4)))) {
+      const detailUrl = `https://www.coupang.com/vp/products/${encodeURIComponent(item.product_id)}?itemId=${encodeURIComponent(item.item_id || '')}&vendorItemId=${encodeURIComponent(item.vendor_item_id || '')}`;
+      await chrome.tabs.update(tabId, { url: detailUrl });
+      await waitForUrl(tabId, /https:\/\/www\.coupang\.com\/vp\/products\//);
+      await sleep(1200);
+      const detail = await extractAutoDetail(tabId);
+      const approval = await requestAutoApproval(detail, item.generated_urls[0], String(deviceToken));
+      outcomes.push({ product_id: item.product_id, approval });
+    }
+    return { ok: true, summary, outcomes };
+  } finally { scheduledRunActive = false; }
+}
+
+function installAutoAlarms() {
+  for (const hour of [7, 12, 18]) chrome.alarms.create(`coupang-goldbox-${hour}`, { when: nextLocalOccurrence(hour), periodInMinutes: 1440 });
+  // 새 버전 설치 직후에는 미발행 상품 1건만 자동 실행해 전체 흐름을 점검한다.
+  chrome.alarms.create('coupang-goldbox-test', { when: Date.now() + 60 * 1000 });
+}
+
+chrome.runtime.onInstalled.addListener(installAutoAlarms);
+chrome.runtime.onStartup.addListener(installAutoAlarms);
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (!/^coupang-goldbox-/.test(alarm.name)) return;
+  if (alarm.name === 'coupang-goldbox-test') {
+    runScheduledGoldbox(1).catch((error) => console.error('Coupang automatic test failed', error));
+    return;
+  }
+  const hour = Number(String(alarm.name).split('-').pop());
+  const limit = hour === 12 ? 2 : 4;
+  runScheduledGoldbox(limit).catch((error) => console.error('Coupang scheduled run failed', error));
+});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'COUPANG_COLLECTOR_PAIR_DEVICE') {

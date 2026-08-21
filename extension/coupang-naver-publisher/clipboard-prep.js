@@ -5,6 +5,26 @@ const copyButton = document.getElementById("copy-image");
 const status = document.getElementById("status");
 let pendingRequest = null;
 
+async function recordClipboardTrace(step, details = {}) {
+  try {
+    const stored = await chrome.storage.local.get("coupangClipboardTrace");
+    const entries = Array.isArray(stored.coupangClipboardTrace) ? stored.coupangClipboardTrace : [];
+    entries.push({ at: new Date().toISOString(), step, ...details });
+    await chrome.storage.local.set({ coupangClipboardTrace: entries.slice(-50) });
+  } catch {
+    // 진단 기록 실패가 이미지 준비를 중단시키지 않도록 한다.
+  }
+}
+
+function imageAddressSummary(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return { host: url.hostname, path: url.pathname, hasQuery: Boolean(url.search) };
+  } catch {
+    return { host: "", path: "", hasQuery: false };
+  }
+}
+
 function safeImageUrl(value) {
   try {
     const url = new URL(String(value || ""));
@@ -21,11 +41,19 @@ function sendResult(payload) {
   try { port.postMessage(payload); } catch { /* 탭 종료 직후에는 응답을 생략한다. */ }
 }
 
-port.onDisconnect.addListener(() => { portConnected = false; });
+port.onDisconnect.addListener(() => {
+  portConnected = false;
+  void recordClipboardTrace("port_disconnected");
+});
+void recordClipboardTrace("page_connected");
 
 async function copyOriginalImage(imageUrl) {
   const safeUrl = safeImageUrl(imageUrl);
-  if (!safeUrl) throw new Error("허용되지 않은 이미지 주소입니다.");
+  if (!safeUrl) {
+    await recordClipboardTrace("image_url_rejected", imageAddressSummary(imageUrl));
+    throw new Error("허용되지 않은 이미지 주소입니다.");
+  }
+  await recordClipboardTrace("image_fetch_start", imageAddressSummary(safeUrl));
   const response = await fetch(safeUrl, { cache: "no-store" });
   if (!response.ok) throw new Error("원본 대표 이미지를 불러오지 못했습니다.");
   const blob = await response.blob();
@@ -41,16 +69,19 @@ async function copyOriginalImage(imageUrl) {
     png = await canvas.convertToBlob({ type: "image/png" });
   }
   await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+  await recordClipboardTrace("clipboard_write_success", { mime: blob.type, width: png.width || 0, height: png.height || 0 });
 }
 
 copyButton.addEventListener("click", async () => {
   if (!pendingRequest) return;
   const request = pendingRequest;
+  void recordClipboardTrace("button_click", { requestId: request.requestId, autoAttempt: Boolean(request.autoAttempt) });
   copyButton.disabled = true;
   status.textContent = "원본 이미지를 준비하고 있습니다.";
   try {
     await copyOriginalImage(request.imageUrl);
     status.textContent = "원본 이미지 준비가 완료되었습니다. 네이버 입력을 계속합니다.";
+    await recordClipboardTrace("request_success", { requestId: request.requestId, portConnected });
     sendResult({ requestId: request.requestId, ok: true });
     pendingRequest = null;
   } catch (error) {
@@ -64,6 +95,7 @@ copyButton.addEventListener("click", async () => {
       return;
     }
     status.textContent = `준비하지 못했습니다: ${message}`;
+    await recordClipboardTrace("request_failure", { requestId: request.requestId, error: message, portConnected });
     sendResult({ requestId: request.requestId, ok: false, error: message });
     pendingRequest = null;
   }
@@ -72,6 +104,7 @@ copyButton.addEventListener("click", async () => {
 port.onMessage.addListener((message) => {
   if (message?.type !== "CLIPBOARD_PREPARE_IMAGE" || !message.requestId) return;
   pendingRequest = { requestId: message.requestId, imageUrl: message.imageUrl, autoAttempt: Boolean(message.autoAttempt) };
+  void recordClipboardTrace("request_received", { requestId: message.requestId, ...imageAddressSummary(message.imageUrl) });
   copyButton.disabled = false;
   status.textContent = pendingRequest.autoAttempt ? "원본 이미지를 자동으로 준비하고 있습니다." : "버튼을 한 번 눌러 원본 이미지를 준비해 주세요.";
   copyButton.focus();

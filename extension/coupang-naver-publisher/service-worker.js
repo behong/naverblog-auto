@@ -259,7 +259,9 @@ function safeImageUrl(value) {
     const url = new URL(value);
     const isBlogAutoProxy = url.origin === BLOGAUTO_ORIGIN && (url.pathname.startsWith("/api/coupang/image") || (url.pathname === "/api/image" && url.searchParams.has("url")));
     const isCoupangCdn = /(^|\.)coupangcdn\.com$/i.test(url.hostname) && /\/(?:image|thumbnails)\//i.test(url.pathname);
+    const sourceText = isBlogAutoProxy ? String(url.searchParams.get("url") || "") : url.href;
     if (!isBlogAutoProxy && !isCoupangCdn) return "";
+    if (/(\/common\/|logo|sprite|icon)/i.test(sourceText)) return "";
     return url.href;
   } catch {
     return "";

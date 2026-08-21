@@ -31,6 +31,7 @@ class Product:
     description: str = ""
     features: tuple[str, ...] = ()
     audiences: tuple[str, ...] = ()
+    image_paths: tuple[str, ...] = ()
 
 
 def _text(value: str, label: str, maximum: int = 500) -> str:
@@ -139,7 +140,7 @@ def build_coupang_post(product: Product) -> dict[str, object]:
         "body": body,
         "tags": hashtag_line,
         "image_path": image_path,
-        "image_paths": [image_path],
+        "image_paths": list(product.image_paths or (image_path,)),
         "expected_url": affiliate_url,
         "current_price": conditional_price,
         "conditional_price": conditional_price,

@@ -23,6 +23,7 @@ class CoupangCandidate:
     product_url: str
     affiliate_url: str
     original_image_url: str
+    original_image_urls: tuple[str, ...] = ()
     normal_price: int | None = None
     sale_price: int | None = None
     conditional_price: int | None = None
@@ -106,6 +107,7 @@ def build_coupang_approval_draft(candidate: CoupangCandidate) -> dict[str, objec
                 name=_clean(candidate.product_name, "상품명"),
                 composition=_clean(candidate.composition, "구성", 300),
                 image_path=_clean(candidate.original_image_url, "원본 대표 이미지 URL", 2000),
+                image_paths=tuple(candidate.original_image_urls or (candidate.original_image_url,)),
                 affiliate_url=_clean(candidate.affiliate_url, "쿠팡 파트너스 링크", 2000),
                 normal_price=candidate.normal_price,
                 sale_price=candidate.sale_price,
@@ -122,6 +124,7 @@ def build_coupang_approval_draft(candidate: CoupangCandidate) -> dict[str, objec
         "product_url": _clean(candidate.product_url, "쿠팡 상품 URL", 2000),
         "affiliate_url": _clean(candidate.affiliate_url, "쿠팡 파트너스 링크", 2000),
         "original_image_url": _clean(candidate.original_image_url, "원본 대표 이미지 URL", 2000),
+        "original_image_urls": list(candidate.original_image_urls or (candidate.original_image_url,)),
         "draft": content,
         "category_no": 42,
         "naver_write_url": "https://blog.naver.com/GoBlogWrite.naver?categoryNo=42",

@@ -40,11 +40,12 @@ def _price(value: object, field: str) -> int:
 
 
 def _string_list(value: object, field: str) -> tuple[str, ...]:
+    """Read optional legacy narrative fields without making them approval gates."""
+    if value is None:
+        return ()
     if not isinstance(value, (list, tuple)):
-        raise ValueError(f"{field} 목록을 확인하지 못했습니다.")
+        raise ValueError(f"{field} 목록 형식이 올바르지 않습니다.")
     result = tuple(" ".join(str(item or "").split())[:180] for item in value if str(item or "").strip())
-    if len(result) < 3:
-        raise ValueError(f"{field} 3개를 확인하지 못했습니다.")
     return result[:3]
 
 
@@ -60,7 +61,8 @@ def candidate_from_payload(payload: dict[str, Any]) -> CoupangCandidate:
         sale_price=_price(payload.get("sale_price"), "일반 할인가"),
         conditional_price=_price(payload.get("conditional_price"), "최저 조건부 가격"),
         price_condition=_text(payload.get("price_condition"), "실제 할인 조건", 300),
-        description=_text(payload.get("description"), "상품 설명", 500),
+        # 쿠팡 간결 발행 정책에서는 상품 설명을 승인 필수값으로 사용하지 않는다.
+        description=" ".join(str(payload.get("description") or "").split())[:500],
         features=_string_list(payload.get("features"), "특징"),
         audiences=_string_list(payload.get("audiences"), "추천 대상"),
         source_image_verified=payload.get("source_image_verified") is True,

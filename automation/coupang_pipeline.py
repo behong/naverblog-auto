@@ -23,14 +23,15 @@ class CoupangCandidate:
     product_url: str
     affiliate_url: str
     original_image_url: str
-    normal_price: int
-    sale_price: int
-    conditional_price: int
-    price_condition: str
-    description: str
-    features: tuple[str, ...]
-    audiences: tuple[str, ...]
+    normal_price: int | None = None
+    sale_price: int | None = None
+    conditional_price: int | None = None
+    price_condition: str = ""
+    description: str = ""
+    features: tuple[str, ...] = ()
+    audiences: tuple[str, ...] = ()
     source_image_verified: bool = False
+    current_price: int | None = None
 
 
 def _clean(value: object, field: str, maximum: int = 500) -> str:
@@ -83,18 +84,15 @@ def validate_coupang_candidate(candidate: CoupangCandidate) -> None:
     if not candidate.source_image_verified:
         raise CoupangCandidateValidationError("원본 대표 이미지 검증이 완료되지 않았습니다.")
 
-    normal_price = _positive_price(candidate.normal_price, "정상가")
-    sale_price = _positive_price(candidate.sale_price, "일반 할인가")
-    conditional_price = _positive_price(candidate.conditional_price, "최저 조건부 가격")
-    if not (normal_price >= sale_price >= conditional_price):
-        raise CoupangCandidateValidationError("가격은 정상가 ≥ 일반 할인가 ≥ 최저 조건부 가격 순서여야 합니다.")
-
-    _clean(candidate.price_condition, "실제 할인 조건", 300)
-    _clean(candidate.description, "상품 설명", 500)
-    if len(tuple(item for item in candidate.features if str(item).strip())) < 3:
-        raise CoupangCandidateValidationError("특징 3개를 확인하지 못했습니다.")
-    if len(tuple(item for item in candidate.audiences if str(item).strip())) < 3:
-        raise CoupangCandidateValidationError("추천 대상 3개를 확인하지 못했습니다.")
+    current_price = _positive_price(candidate.current_price or candidate.conditional_price or candidate.sale_price or candidate.normal_price, "현재 구매가")
+    if candidate.normal_price is not None:
+        _positive_price(candidate.normal_price, "정상가")
+    if candidate.sale_price is not None:
+        _positive_price(candidate.sale_price, "일반 할인가")
+    if candidate.conditional_price is not None:
+        _positive_price(candidate.conditional_price, "조건부 가격")
+    if candidate.price_condition:
+        _clean(candidate.price_condition, "할인 조건", 300)
 
 
 def build_coupang_approval_draft(candidate: CoupangCandidate) -> dict[str, object]:
@@ -109,13 +107,10 @@ def build_coupang_approval_draft(candidate: CoupangCandidate) -> dict[str, objec
                 composition=_clean(candidate.composition, "구성", 300),
                 image_path=_clean(candidate.original_image_url, "원본 대표 이미지 URL", 2000),
                 affiliate_url=_clean(candidate.affiliate_url, "쿠팡 파트너스 링크", 2000),
-                normal_price=_positive_price(candidate.normal_price, "정상가"),
-                sale_price=_positive_price(candidate.sale_price, "일반 할인가"),
-                conditional_price=_positive_price(candidate.conditional_price, "최저 조건부 가격"),
-                price_condition=_clean(candidate.price_condition, "실제 할인 조건", 300),
-                description=_clean(candidate.description, "상품 설명", 500),
-                features=tuple(candidate.features),
-                audiences=tuple(candidate.audiences),
+                normal_price=candidate.normal_price,
+                sale_price=candidate.sale_price,
+                conditional_price=candidate.current_price or candidate.conditional_price or candidate.sale_price or candidate.normal_price,
+                price_condition=" ".join(str(candidate.price_condition or "").split()),
             )
         )
     except ContentValidationError as exc:

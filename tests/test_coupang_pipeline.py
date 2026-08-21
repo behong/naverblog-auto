@@ -36,7 +36,8 @@ class CoupangPipelineTests(unittest.TestCase):
         self.assertEqual(result["category_no"], 42)
         self.assertIn("카테고리", "카테고리 42")
         self.assertIn("쿠팡 파트너스", result["draft"]["body"])
-        self.assertIn("조건부 가격", result["draft"]["body"])
+        self.assertIn("최저 구매가 12,000원", result["draft"]["body"])
+        self.assertIn("#골드박스", result["draft"]["tags"])
 
     def test_rejects_unverified_source_image(self):
         with self.assertRaisesRegex(CoupangCandidateValidationError, "원본 대표 이미지 검증"):
@@ -46,9 +47,10 @@ class CoupangPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(CoupangCandidateValidationError, "파트너스 단축 링크"):
             build_coupang_approval_draft(self._candidate(affiliate_url="https://www.coupang.com/vp/products/1234567890"))
 
-    def test_rejects_invalid_price_order(self):
-        with self.assertRaisesRegex(CoupangCandidateValidationError, "가격은 정상가"):
-            build_coupang_approval_draft(self._candidate(normal_price=10000, sale_price=15000, conditional_price=12000))
+    def test_accepts_current_price_without_price_order_requirement(self):
+        result = build_coupang_approval_draft(self._candidate(normal_price=10000, sale_price=15000, conditional_price=12000))
+        self.assertEqual(result["category_no"], 42)
+        self.assertIn("최저 구매가 12,000원", result["draft"]["body"])
 
 
 if __name__ == "__main__":

@@ -121,35 +121,28 @@ def _three(values: tuple[str, ...], fallback_label: str) -> tuple[str, str, str]
 
 def build_coupang_post(product: Product) -> dict[str, object]:
     _, name, composition, image_path, affiliate_url = _require_product_common(product, "coupang")
-    normal_price = _price(product.normal_price, "정상가")
-    sale_price = _price(product.sale_price, "일반 할인가")
-    conditional_price = _price(product.conditional_price, "최저 조건부 가격")
-    condition = _text(product.price_condition, "실제 할인 조건", 300)
-    description = _text(product.description, "상품 설명", 500)
-    features = _three(product.features, "특징")
-    audiences = _three(product.audiences, "추천 대상")
-    title = f"[{name}], [{condition}] 적용 시 {conditional_price:,}원"
-    price_line = f"정상가 {normal_price:,}원 → 일반 할인가 {sale_price:,}원 → 최저 조건부 가격 {conditional_price:,}원"
+    conditional_price = _price(product.conditional_price or product.sale_price or product.price, "현재 구매가")
+    condition = " ".join(str(product.price_condition or "").split())
+    condition_text = condition if condition.endswith("적용 시") else (f"{condition} 적용 시" if condition else "")
+    title = f"[{name}] {conditional_price:,}원"
+    tags = _tags(name, ("골드박스", "쿠팡파트너스"))
+    hashtag_line = " ".join(f"#{tag}" for tag in tags)
     body = "\n\n".join((
+        f"실제 할인 조건: {condition_text} 최저 구매가 {conditional_price:,}원".replace(":  최저", ": 최저").strip(),
         f"구성: {composition}",
-        f"실제 할인 조건: {condition}",
-        price_line,
-        description,
-        "특징\n- " + "\n- ".join(features),
-        "추천 대상\n- " + "\n- ".join(audiences),
         "상품 자세히 보기",
         affiliate_url,
-        CONDITIONAL_PRICE_NOTICE,
         COUPANG_DISCLOSURE,
+        hashtag_line,
     ))
     return {
         "title": title,
         "body": body,
-        "tags": _tags(name, ("골드박스", "쿠팡파트너스")),
+        "tags": hashtag_line,
         "image_path": image_path,
+        "image_paths": [image_path],
         "expected_url": affiliate_url,
-        "normal_price": normal_price,
-        "sale_price": sale_price,
+        "current_price": conditional_price,
         "conditional_price": conditional_price,
         "price_condition": condition,
         "category_no": 42,

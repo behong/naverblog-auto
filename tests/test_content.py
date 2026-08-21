@@ -31,7 +31,7 @@ class ContentTests(unittest.TestCase):
         self.assertGreaterEqual(len(post["tags"]), 5)
         self.assertLessEqual(len(post["tags"]), 7)
 
-    def test_coupang_post_requires_all_price_fields_and_contains_required_notices(self) -> None:
+    def test_coupang_post_uses_short_affiliate_template_and_required_tags(self) -> None:
         product = Product(
             platform="coupang",
             product_id="c-1",
@@ -43,18 +43,18 @@ class ContentTests(unittest.TestCase):
             sale_price=7000,
             conditional_price=500,
             price_condition="와우회원 쿠폰",
-            description="가볍게 입기 좋은 기본 반팔 티셔츠입니다.",
-            features=("가벼운 소재", "여유 있는 핏", "일상 활용성"),
-            audiences=("기본 티셔츠가 필요한 분", "편한 옷을 찾는 분", "합리적 가격을 찾는 분"),
         )
         post = build_coupang_post(product)
 
         self.assertEqual(post["category_no"], 42)
-        self.assertIn("정상가 13,000원 → 일반 할인가 7,000원 → 최저 조건부 가격 500원", post["body"])
-        self.assertIn(CONDITIONAL_PRICE_NOTICE, post["body"])
+        self.assertEqual(post["title"], "[테스트 티셔츠] 500원")
+        self.assertIn("실제 할인 조건: 와우회원 쿠폰 적용 시 최저 구매가 500원", post["body"])
+        self.assertIn("구성: 1개", post["body"])
+        self.assertNotIn("특징", post["body"])
+        self.assertNotIn("추천 대상", post["body"])
         self.assertIn(COUPANG_DISCLOSURE, post["body"])
-        self.assertIn("골드박스", post["tags"])
-        self.assertIn("쿠팡파트너스", post["tags"])
+        self.assertIn("#골드박스", post["tags"])
+        self.assertIn("#쿠팡파트너스", post["tags"])
 
     def test_threads_requires_published_source_and_image(self) -> None:
         product = Product(

@@ -1,5 +1,6 @@
 const BLOGAUTO_ORIGIN = "https://blogauto.hongzi.us";
 const port = chrome.runtime.connect({ name: "naver-draft-clipboard-prep" });
+let portConnected = true;
 const copyButton = document.getElementById("copy-image");
 const status = document.getElementById("status");
 let pendingRequest = null;
@@ -7,11 +8,20 @@ let pendingRequest = null;
 function safeImageUrl(value) {
   try {
     const url = new URL(String(value || ""));
-    return url.origin === BLOGAUTO_ORIGIN && url.pathname.startsWith("/api/image") ? url.href : "";
+    const isBlogAutoProxy = url.origin === BLOGAUTO_ORIGIN && (url.pathname.startsWith("/api/coupang/image") || (url.pathname === "/api/image" && url.searchParams.has("url")));
+    const isCoupangCdn = /(^|\.)coupangcdn\.com$/i.test(url.hostname) && /\/(?:image|thumbnails)\//i.test(url.pathname);
+    return isBlogAutoProxy || isCoupangCdn ? url.href : "";
   } catch {
     return "";
   }
 }
+
+function sendResult(payload) {
+  if (!portConnected) return;
+  try { port.postMessage(payload); } catch { /* 탭 종료 직후에는 응답을 생략한다. */ }
+}
+
+port.onDisconnect.addListener(() => { portConnected = false; });
 
 async function copyOriginalImage(imageUrl) {
   const safeUrl = safeImageUrl(imageUrl);
@@ -41,7 +51,7 @@ copyButton.addEventListener("click", async () => {
   try {
     await copyOriginalImage(request.imageUrl);
     status.textContent = "원본 이미지 준비가 완료되었습니다. 네이버 입력을 계속합니다.";
-    port.postMessage({ requestId: request.requestId, ok: true });
+    sendResult({ requestId: request.requestId, ok: true });
     pendingRequest = null;
   } catch (error) {
     const message = String(error?.message || "이미지 클립보드 준비 실패");
@@ -54,7 +64,7 @@ copyButton.addEventListener("click", async () => {
       return;
     }
     status.textContent = `준비하지 못했습니다: ${message}`;
-    port.postMessage({ requestId: request.requestId, ok: false, error: message });
+    sendResult({ requestId: request.requestId, ok: false, error: message });
     pendingRequest = null;
   }
 });

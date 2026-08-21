@@ -207,8 +207,8 @@ async function pollApprovedDraft() {
   } catch (error) {
     const errorMessage = String(error?.message || "알 수 없는 오류").slice(0, 500);
     const batchId = String(payload?.result?.batch_id || "");
-    if (Number.isInteger(naverAutomationWindowId)) await chrome.windows.remove(naverAutomationWindowId).catch(() => undefined);
-    else if (Number.isInteger(naverAutomationTabId)) await chrome.tabs.remove(naverAutomationTabId).catch(() => undefined);
+    // 실패 시 글쓰기 탭을 닫지 않는다. 네이버의 변경사항 확인창으로 사용자를 멈추게 하지 않고,
+    // 현재 설정·진단 상태를 그대로 보존해 재시도와 원인 확인이 가능하도록 한다.
     if (Number.isInteger(clipboardPrepTabId)) await chrome.tabs.remove(clipboardPrepTabId).catch(() => undefined);
     await closeImageClipboardDocument();
     if (batchId && claimAcquired) {
@@ -1456,10 +1456,13 @@ const SELECT_COUPANG_CATEGORY = `(() => {
   const label = (el) => ((el?.getAttribute?.('aria-label') || '') + ' ' + (el?.getAttribute?.('title') || '') + ' ' + (el?.innerText || el?.textContent || '')).replace(/\\s+/g, ' ').trim();
   visit(document);
   const candidates = roots.flatMap((root) => [...(root.querySelectorAll?.('[role="option"],[role="menuitem"],li,button,a,[data-category-name]') || [])]).filter(visible);
-  const option = candidates.find((el) => /개이득 쿠팡쇼핑/.test(label(el)) || String(el.getAttribute?.('data-category-name') || '') === '개이득 쿠팡쇼핑' || String(el.getAttribute?.('data-category-no') || '') === '42');
+  const option = candidates.find((el) => /개이득 쿠팡쇼핑/.test(label(el)) || String(el.getAttribute?.('data-category-name') || '') === '개이득 쿠팡쇼핑' || String(el.getAttribute?.('data-category-no') || '') === '42' || String(el.getAttribute?.('value') || '') === '42');
   if (!option) return { selected: false, reason: 'coupang_category_option_not_found' };
-  option.click();
-  return { selected: true, label: label(option).slice(0, 100) };
+  const rect = option.getBoundingClientRect();
+  let x = rect.left + rect.width / 2; let y = rect.top + rect.height / 2;
+  let win = option.ownerDocument.defaultView;
+  while (win && win !== win.top) { const frame = win.frameElement; if (!frame) break; const frameRect = frame.getBoundingClientRect(); x += frameRect.left; y += frameRect.top; win = win.parent; }
+  return { selected: false, point: { x, y }, label: label(option).slice(0, 100) };
 })()`;
 
 async function selectCoupangCategory(tabId) {
@@ -1468,7 +1471,13 @@ async function selectCoupangCategory(tabId) {
   if (!opened?.result?.value?.clicked) return opened?.result?.value || { selected: false, reason: 'category_control_not_found' };
   await sleep(450);
   const selected = await send(tabId, 'Runtime.evaluate', { expression: SELECT_COUPANG_CATEGORY, returnByValue: true, awaitPromise: false });
-  return selected?.result?.value || { selected: false, reason: 'category_select_failed' };
+  const value = selected?.result?.value || { selected: false, reason: 'category_select_failed' };
+  if (value.point && Number.isFinite(value.point.x) && Number.isFinite(value.point.y)) {
+    await click(tabId, value.point);
+    await sleep(650);
+    return { ...value, selected: true, clickMethod: 'cdp-coordinate' };
+  }
+  return value;
 }
 
 async function getNaverPublishPageState(tabId) {

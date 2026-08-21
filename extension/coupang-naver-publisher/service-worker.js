@@ -1451,12 +1451,20 @@ const OPEN_COUPANG_CATEGORY = `(() => {
   const label = (el) => ((el?.getAttribute?.('aria-label') || '') + ' ' + (el?.getAttribute?.('title') || '') + ' ' + (el?.innerText || el?.textContent || '')).replace(/\\s+/g, ' ').trim();
   visit(document);
   const controls = roots.flatMap((root) => [...(root.querySelectorAll?.('button,[role=button],select,a,div,span,[aria-haspopup="listbox"],[aria-haspopup="true"]') || [])]).filter(visible);
-  const selectedControl = controls.find((el) => {
-    const t = label(el);
-    return String(el.value || '') === '42' || (/개이득 쿠팡쇼핑/.test(t) && !el.querySelector?.('li,[role="option"]'));
-  });
+  const compact = (value) => String(value || '').replace(/\\s+/g, '');
+  const selectedControl = controls.filter((el) => {
+    const t = compact(label(el));
+    return String(el.value || '') === '42' || ((t === '개이득쿠팡쇼핑' || t === '쿠팡쇼핑') && !el.querySelector?.('li,[role="option"]'));
+  }).sort((a, b) => label(a).length - label(b).length)[0];
   if (selectedControl) return { alreadySelected: true, selectedLabel: label(selectedControl).slice(0, 100) };
-  const current = controls.find((el) => /개이득 (토스)?쇼핑|카테고리/.test(label(el)) && !el.querySelector?.('li,[role="option"]'));
+  const currentCandidates = controls.filter((el) => {
+    const t = compact(label(el));
+    return t === '개이득토스쇼핑' || t === '토스쇼핑' || t === '카테고리';
+  });
+  const current = currentCandidates.sort((a, b) => {
+    const priority = (el) => /^(BUTTON|SELECT|A)$/.test(el.tagName) || el.getAttribute?.('role') === 'button' || el.hasAttribute?.('aria-haspopup') ? 0 : 1;
+    return priority(a) - priority(b) || label(a).length - label(b).length;
+  })[0];
   if (!current) return { clicked: false, reason: 'category_control_not_found' };
   const clickTarget = current.closest?.('button,[role="button"],[aria-haspopup],a,select') || current.parentElement || current;
   const rect = clickTarget.getBoundingClientRect();

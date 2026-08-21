@@ -1423,10 +1423,18 @@ const NAVER_PUBLISH_PAGE_STATE = `(() => {
   const publicRadio = roots.flatMap((root) => [...(root.querySelectorAll?.('input#open_public') || [])])[0] || null;
   const publicControl = controls.find((el) => /전체공개/.test(label(el))) || (publicRadio?.parentElement && visible(publicRadio.parentElement) ? publicRadio.parentElement : null);
   const publicSelected = Boolean(publicRadio?.checked) || controls.some((el) => /전체공개/.test(label(el)) && (el.checked === true || el.getAttribute('aria-checked') === 'true' || /selected|checked|active|on/.test(String(el.className || ''))));
-  const selectedCategoryText = roots.flatMap((root) => [...(root.querySelectorAll?.('select option:checked,[aria-selected="true"],[role="option"][aria-selected="true"],[data-category-name]') || [])]).map((el) => label(el) + ' ' + (el.value || '')).join(' ');
-  const category42Visible = /개이득 쿠팡쇼핑/.test(text + ' ' + selectedCategoryText) || /(?:category|카테고리)(?:No|번호)?\\s*[=:]\\s*42/.test(text + ' ' + selectedCategoryText);
+  const selectedCategoryText = roots.flatMap((root) => [...(root.querySelectorAll?.('select option:checked,[aria-selected="true"],[role="option"][aria-selected="true"],[data-category-name][aria-selected="true"],[data-category-selected="true"]') || [])]).map((el) => label(el) + ' ' + (el.value || '')).join(' ');
+  // 드롭다운 전체 목록에는 토스·쿠팡 항목이 동시에 노출될 수 있으므로, 목록 텍스트만으로
+  // 쿠팡이 선택됐다고 판정하지 않는다. 선택 컨트롤 또는 selected/checked 항목만 신뢰한다.
+  const selectedCategoryControls = controls.filter((el) => {
+    const t = label(el);
+    return /개이득 (토스)?쇼핑|카테고리/.test(t) && !el.querySelector?.('li,[role="option"]');
+  });
+  const selectedCategoryControlText = selectedCategoryControls.map((el) => label(el) + ' ' + (el.value || '')).join(' ');
+  const category42Visible = /개이득 쿠팡쇼핑/.test(selectedCategoryText + ' ' + selectedCategoryControlText) || /(?:category|카테고리)(?:No|번호)?\\s*[=:]\\s*42/.test(selectedCategoryText + ' ' + selectedCategoryControlText);
   const category42Url = new URL(location.href).searchParams.get('categoryNo') === '42';
-  const category42Verified = category42Visible || category42Url;
+  // URL은 기본값 요청일 뿐 실제 선택 결과가 아니므로, URL만으로 발행 검증을 통과시키지 않는다.
+  const category42Verified = category42Visible;
   const dialogPublish = publishButtons.find((el) => { const chain = []; for (let node = el; node && chain.length < 8; node = node.parentElement) chain.push(node); return chain.some((node) => /dialog|modal|layer|popup/i.test(String(node?.className || '')) || node?.getAttribute?.('role') === 'dialog'); });
   const topPublish = publishButtons.find((el) => { const rect = el.getBoundingClientRect(); return el !== dialogPublish && rect.top >= 0 && rect.top < 180 && rect.right > window.innerWidth * 0.55; });
   const trigger = topPublish || publishButtons.find((el) => el !== dialogPublish);
@@ -1441,9 +1449,13 @@ const OPEN_COUPANG_CATEGORY = `(() => {
   const visible = (el) => { const style = el?.ownerDocument?.defaultView?.getComputedStyle(el); const rect = el?.getBoundingClientRect?.(); return Boolean(style && rect && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width >= 8 && rect.height >= 8); };
   const label = (el) => ((el?.getAttribute?.('aria-label') || '') + ' ' + (el?.getAttribute?.('title') || '') + ' ' + (el?.innerText || el?.textContent || '')).replace(/\\s+/g, ' ').trim();
   visit(document);
-  const controls = roots.flatMap((root) => [...(root.querySelectorAll?.('button,[role=button],select,[aria-haspopup="listbox"],[aria-haspopup="true"]') || [])]).filter(visible);
-  if (controls.some((el) => /개이득 쿠팡쇼핑/.test(label(el)) || String(el.value || '') === '42')) return { alreadySelected: true };
-  const current = controls.find((el) => /개이득 (토스)?쇼핑|카테고리/.test(label(el)));
+  const controls = roots.flatMap((root) => [...(root.querySelectorAll?.('button,[role=button],select,a,div,span,[aria-haspopup="listbox"],[aria-haspopup="true"]') || [])]).filter(visible);
+  const selectedControl = controls.find((el) => {
+    const t = label(el);
+    return String(el.value || '') === '42' || (/개이득 쿠팡쇼핑/.test(t) && !el.querySelector?.('li,[role="option"]'));
+  });
+  if (selectedControl) return { alreadySelected: true, selectedLabel: label(selectedControl).slice(0, 100) };
+  const current = controls.find((el) => /개이득 (토스)?쇼핑|카테고리/.test(label(el)) && !el.querySelector?.('li,[role="option"]'));
   if (!current) return { clicked: false, reason: 'category_control_not_found' };
   current.click();
   return { clicked: true };
@@ -1455,7 +1467,7 @@ const SELECT_COUPANG_CATEGORY = `(() => {
   const visible = (el) => { const style = el?.ownerDocument?.defaultView?.getComputedStyle(el); const rect = el?.getBoundingClientRect?.(); return Boolean(style && rect && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width >= 8 && rect.height >= 8); };
   const label = (el) => ((el?.getAttribute?.('aria-label') || '') + ' ' + (el?.getAttribute?.('title') || '') + ' ' + (el?.innerText || el?.textContent || '')).replace(/\\s+/g, ' ').trim();
   visit(document);
-  const candidates = roots.flatMap((root) => [...(root.querySelectorAll?.('[role="option"],[role="menuitem"],li,button,a,[data-category-name]') || [])]).filter(visible);
+  const candidates = roots.flatMap((root) => [...(root.querySelectorAll?.('[role="option"],[role="menuitem"],li,button,a,div,span,[data-category-name],[data-category-no],[data-value]') || [])]).filter(visible);
   const option = candidates.find((el) => /개이득 쿠팡쇼핑/.test(label(el)) || String(el.getAttribute?.('data-category-name') || '') === '개이득 쿠팡쇼핑' || String(el.getAttribute?.('data-category-no') || '') === '42' || String(el.getAttribute?.('value') || '') === '42');
   if (!option) return { selected: false, reason: 'coupang_category_option_not_found' };
   const rect = option.getBoundingClientRect();

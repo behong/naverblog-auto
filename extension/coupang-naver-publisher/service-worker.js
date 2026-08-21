@@ -200,8 +200,8 @@ async function pollApprovedDraft() {
     delete draft.naverAutomationWindowId;
     await chrome.storage.session.set({ [DRAFT_KEY]: draft });
 
-    // 쿠팡 승인 배치는 서버가 오래된 토스 글쓰기 주소를 반환해도 쿠팡 카테고리 42로만 연다.
-    const naverWriteUrl = "https://blog.naver.com/GoBlogWrite.naver?categoryNo=42";
+    // 카테고리는 네이버 발행 화면에서 사용자가 직접 선택한다. 쿠팡 발행 도우미는 기본 카테고리를 강제하지 않는다.
+    const naverWriteUrl = "https://blog.naver.com/GoBlogWrite.naver";
     await chrome.tabs.update(naverAutomationTabId, { url: naverWriteUrl, active: true });
     await recordApprovalDispatchTrace({ step: "naver_automation_tab_opened", error: "", batchId: payload.result.batch_id || "" });
   } catch (error) {

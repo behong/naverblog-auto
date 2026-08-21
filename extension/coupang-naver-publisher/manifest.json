@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "쿠팡 네이버 자동 발행 도우미",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "쿠팡 검증 상품의 조건부 최저가·원본 이미지·제휴 링크를 확인한 뒤 네이버 카테고리 42에 전체공개 발행하고 공개 URL을 기록합니다.",
   "permissions": ["storage", "tabs", "debugger", "alarms", "offscreen", "clipboardWrite"],
   "host_permissions": [

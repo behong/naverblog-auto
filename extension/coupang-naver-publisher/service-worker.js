@@ -297,13 +297,17 @@ function normalizeDraft(rawDraft) {
   const title = asText(rawDraft?.title, 300);
   const body = asText(rawDraft?.body, 20_000);
   const tags = asText(rawDraft?.tags, 2_000);
+  const imageUrls = [...new Set([rawDraft?.imageUrl, ...(Array.isArray(rawDraft?.imageUrls) ? rawDraft.imageUrls : [])]
+    .map((value) => safeImageUrl(value))
+    .filter(Boolean))].slice(0, 4);
   if (!title || !body) throw new Error("제목 또는 본문이 비어 있습니다.");
   return {
     id: crypto.randomUUID(),
     title,
     body,
     tags,
-    imageUrl: safeImageUrl(rawDraft?.imageUrl),
+    imageUrl: imageUrls[0] || "",
+    imageUrls,
     approvalBatchId: asText(rawDraft?.approvalBatchId, 80),
     preflightOnly: rawDraft?.preflightOnly === true,
     product: normalizePublishProduct(rawDraft?.product),
@@ -1349,6 +1353,19 @@ async function autoFillNaver(tabId, draft) {
     const imagePasted = await waitForPastedImage(tabId, baselineImages);
     if (!imagePasted) throw new Error("원본 대표 이미지 붙여넣기를 확인하지 못했습니다. 이미지 없는 글 입력을 중단했습니다.");
     await recordAutoFillTrace({ stage: "image-pasted-below-link", invisibleLinkSeedUsed: linkResult.invisibleLinkSeedUsed });
+
+    const extraImageUrls = Array.isArray(draft.imageUrls) ? draft.imageUrls.slice(1, 4) : [];
+    for (const imageUrl of extraImageUrls) {
+      await click(tabId, points.body);
+      await sleep(180);
+      await pressCtrlEnd(tabId);
+      await pressEnter(tabId);
+      await insertOriginalImageFile(tabId, imageUrl);
+      await sleep(700);
+    }
+    if (extraImageUrls.length) {
+      await recordAutoFillTrace({ stage: "extra-images-inserted", imageCount: extraImageUrls.length + 1 });
+    }
 
     if (layout.afterImage) {
       await pressEnter(tabId);

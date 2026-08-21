@@ -23,6 +23,7 @@ COPY --chown=appuser:appuser toss_open_api.py ./toss_open_api.py
 COPY --chown=appuser:appuser toss_collector.py ./toss_collector.py
 COPY --chown=appuser:appuser telegram_approval.py ./telegram_approval.py
 COPY --chown=appuser:appuser scripts ./scripts
+RUN PYTHONPATH=/app python scripts/verify_toss_schedule_runtime.py
 COPY --chown=appuser:appuser static ./static
 
 USER appuser

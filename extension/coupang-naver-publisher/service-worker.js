@@ -241,7 +241,9 @@ function safeImageUrl(value) {
   if (!value) return "";
   try {
     const url = new URL(value);
-    if (url.origin !== BLOGAUTO_ORIGIN || !url.pathname.startsWith("/api/coupang/image")) return "";
+    const isBlogAutoProxy = url.origin === BLOGAUTO_ORIGIN && url.pathname.startsWith("/api/coupang/image");
+    const isCoupangCdn = /(^|\.)coupangcdn\.com$/i.test(url.hostname) && /\/image\//i.test(url.pathname);
+    if (!isBlogAutoProxy && !isCoupangCdn) return "";
     return url.href;
   } catch {
     return "";

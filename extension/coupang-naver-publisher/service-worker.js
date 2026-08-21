@@ -200,8 +200,8 @@ async function pollApprovedDraft() {
     delete draft.naverAutomationWindowId;
     await chrome.storage.session.set({ [DRAFT_KEY]: draft });
 
-    // 쿠팡 전용 발행 탭은 카테고리 42를 기본값으로 열고, 발행 설정 패널에서도 실제 선택 상태를 재검증한다.
-    const naverWriteUrl = "https://blog.naver.com/GoBlogWrite.naver?categoryNo=42";
+    // 네이버 글쓰기 화면을 연 뒤 발행 설정 패널의 실제 UI에서 카테고리 42를 선택하고 재검증한다.
+    const naverWriteUrl = "https://blog.naver.com/GoBlogWrite.naver";
     await chrome.tabs.update(naverAutomationTabId, { url: naverWriteUrl, active: true });
     await recordApprovalDispatchTrace({ step: "naver_automation_tab_opened", error: "", batchId: payload.result.batch_id || "" });
   } catch (error) {
@@ -1492,15 +1492,18 @@ async function selectCoupangCategory(tabId) {
   const opened = await send(tabId, 'Runtime.evaluate', { expression: OPEN_COUPANG_CATEGORY, returnByValue: true, awaitPromise: false });
   if (opened?.result?.value?.alreadySelected) return { alreadySelected: true };
   if (!opened?.result?.value?.clicked) return opened?.result?.value || { selected: false, reason: 'category_control_not_found' };
-  await sleep(450);
-  const selected = await send(tabId, 'Runtime.evaluate', { expression: SELECT_COUPANG_CATEGORY, returnByValue: true, awaitPromise: false });
-  const value = selected?.result?.value || { selected: false, reason: 'category_select_failed' };
-  if (value.point && Number.isFinite(value.point.x) && Number.isFinite(value.point.y)) {
-    await click(tabId, value.point);
-    await sleep(650);
-    return { ...value, selected: true, clickMethod: 'cdp-coordinate' };
+  await sleep(500);
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const selected = await send(tabId, 'Runtime.evaluate', { expression: SELECT_COUPANG_CATEGORY, returnByValue: true, awaitPromise: false });
+    const value = selected?.result?.value || { selected: false, reason: 'category_select_failed' };
+    if (value.point && Number.isFinite(value.point.x) && Number.isFinite(value.point.y)) {
+      await click(tabId, value.point);
+      await sleep(650);
+      return { ...value, selected: true, clickMethod: 'cdp-coordinate', attempts: attempt + 1 };
+    }
+    await sleep(200);
   }
-  return value;
+  return { selected: false, reason: 'coupang_category_option_not_found_after_retry' };
 }
 
 async function getNaverPublishPageState(tabId) {

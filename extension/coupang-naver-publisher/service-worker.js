@@ -88,7 +88,17 @@ async function prepareApprovedImage(imageUrl, windowId) {
   // 포커스를 가진 일반 Chrome 전용 탭에서만 PNG 클립보드를 준비한다.
   // 숨은 문서는 Chrome이 클립보드 쓰기를 차단하므로 사용하지 않는다.
   const safeUrl = safeImageUrl(imageUrl);
-  if (!safeUrl) throw new Error("원본 대표 이미지 주소를 확인하지 못했습니다.");
+  if (!safeUrl) {
+    let detail = "";
+    try {
+      const rejected = new URL(String(imageUrl || ""));
+      detail = ` (host=${rejected.hostname || "없음"}, path=${rejected.pathname || "없음"})`;
+    } catch {
+      detail = " (주소 형식 확인 불가)";
+    }
+    await recordApprovalDispatchTrace({ step: "image_url_rejected", error: `허용되지 않은 이미지 주소${detail}` });
+    throw new Error(`허용되지 않은 이미지 주소입니다.${detail}`);
+  }
   const createProperties = { url: chrome.runtime.getURL("clipboard-prep.html"), active: true };
   if (Number.isInteger(windowId)) createProperties.windowId = windowId;
   const prepTab = await chrome.tabs.create(createProperties);

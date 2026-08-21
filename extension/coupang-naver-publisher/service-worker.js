@@ -1431,7 +1431,8 @@ const NAVER_PUBLISH_PAGE_STATE = `(() => {
     return /개이득 (토스)?쇼핑|카테고리/.test(t) && !el.querySelector?.('li,[role="option"]');
   });
   const selectedCategoryControlText = selectedCategoryControls.map((el) => label(el) + ' ' + (el.value || '')).join(' ');
-  const category42Visible = /개이득 쿠팡쇼핑/.test(selectedCategoryText + ' ' + selectedCategoryControlText) || /(?:category|카테고리)(?:No|번호)?\\s*[=:]\\s*42/.test(selectedCategoryText + ' ' + selectedCategoryControlText);
+  const selectedCategoryAll = (selectedCategoryText + ' ' + selectedCategoryControlText).replace(/\\s+/g, '');
+  const category42Visible = (/(?:개이득)?쿠팡쇼핑/.test(selectedCategoryAll) && !/토스쇼핑/.test(selectedCategoryAll)) || /(?:category|카테고리)(?:No|번호)?\\s*[=:]\\s*42/.test(selectedCategoryText + ' ' + selectedCategoryControlText);
   const category42Url = new URL(location.href).searchParams.get('categoryNo') === '42';
   // URL은 기본값 요청일 뿐 실제 선택 결과가 아니므로, URL만으로 발행 검증을 통과시키지 않는다.
   const category42Verified = category42Visible;
@@ -1469,9 +1470,11 @@ const SELECT_COUPANG_CATEGORY = `(() => {
   visit(document);
   const candidates = roots.flatMap((root) => [...(root.querySelectorAll?.('[role="option"],[role="menuitem"],li,button,a,div,span,[data-category-name],[data-category-no],[data-value]') || [])]).filter(visible);
   const target = '개이득 쿠팡쇼핑';
+  const normalized = (value) => String(value || '').replace(/\\s+/g, '');
   const exactCandidates = candidates.filter((el) => {
     const text = label(el);
-    return text === target || String(el.getAttribute?.('data-category-name') || '') === target || String(el.getAttribute?.('data-category-no') || '') === '42' || String(el.getAttribute?.('data-value') || '') === '42' || String(el.getAttribute?.('value') || '') === '42';
+    const compact = normalized(text);
+    return text === target || compact === '개이득쿠팡쇼핑' || compact === '쿠팡쇼핑' || String(el.getAttribute?.('data-category-name') || '') === target || String(el.getAttribute?.('data-category-no') || '') === '42' || String(el.getAttribute?.('data-value') || '') === '42' || String(el.getAttribute?.('value') || '') === '42';
   });
   const option = exactCandidates.sort((a, b) => {
     const priority = (el) => /^(LI|BUTTON|A)$/.test(el.tagName) || el.getAttribute?.('role') === 'option' || el.hasAttribute?.('data-category-name') || el.hasAttribute?.('data-category-no') ? 0 : 1;

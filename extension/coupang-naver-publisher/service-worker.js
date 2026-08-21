@@ -200,7 +200,7 @@ async function pollApprovedDraft() {
     delete draft.naverAutomationWindowId;
     await chrome.storage.session.set({ [DRAFT_KEY]: draft });
 
-    // 카테고리는 네이버 발행 화면에서 사용자가 직접 선택한다. 쿠팡 발행 도우미는 기본 카테고리를 강제하지 않는다.
+    // 네이버 글쓰기 화면에서 사용자가 카테고리를 직접 선택한다. URL의 기본 categoryNo는 검증 기준으로 사용하지 않는다.
     const naverWriteUrl = "https://blog.naver.com/GoBlogWrite.naver";
     await chrome.tabs.update(naverAutomationTabId, { url: naverWriteUrl, active: true });
     await recordApprovalDispatchTrace({ step: "naver_automation_tab_opened", error: "", batchId: payload.result.batch_id || "" });

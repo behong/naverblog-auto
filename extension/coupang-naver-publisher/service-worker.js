@@ -200,8 +200,8 @@ async function pollApprovedDraft() {
     delete draft.naverAutomationWindowId;
     await chrome.storage.session.set({ [DRAFT_KEY]: draft });
 
-    // 네이버 글쓰기 화면에서 사용자가 카테고리를 직접 선택한다. URL의 기본 categoryNo는 검증 기준으로 사용하지 않는다.
-    const naverWriteUrl = "https://blog.naver.com/GoBlogWrite.naver";
+    // 쿠팡 전용 발행 탭은 카테고리 42를 기본값으로 열고, 발행 설정 패널에서도 실제 선택 상태를 재검증한다.
+    const naverWriteUrl = "https://blog.naver.com/GoBlogWrite.naver?categoryNo=42";
     await chrome.tabs.update(naverAutomationTabId, { url: naverWriteUrl, active: true });
     await recordApprovalDispatchTrace({ step: "naver_automation_tab_opened", error: "", batchId: payload.result.batch_id || "" });
   } catch (error) {
@@ -1550,26 +1550,28 @@ async function waitForPublishedNaverUrl(tabId, tabIdsBeforeClick) {
   return '';
 }
 
-const CLICK_NAVER_FINAL_PUBLISH = `(() => {
+const FIND_NAVER_FINAL_PUBLISH = `(() => {
   const visited = new Set(); const roots = [];
   const visit = (root) => { if (!root || visited.has(root)) return; visited.add(root); roots.push(root); for (const frame of root.querySelectorAll ? root.querySelectorAll('iframe') : []) { try { if (frame.contentDocument) visit(frame.contentDocument); } catch (_) {} } for (const host of root.querySelectorAll ? root.querySelectorAll('*') : []) { try { if (host.shadowRoot) visit(host.shadowRoot); } catch (_) {} } };
   const visible = (el) => { const style = el?.ownerDocument?.defaultView?.getComputedStyle(el); const rect = el?.getBoundingClientRect?.(); return Boolean(style && rect && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width >= 10 && rect.height >= 10); };
   const label = (el) => ((el?.getAttribute?.('aria-label') || '') + ' ' + (el?.getAttribute?.('title') || '') + ' ' + (el?.innerText || el?.textContent || '')).replace(/\\s+/g, ' ').trim();
+  const point = (el) => { const rect = el.getBoundingClientRect(); let x = rect.left + rect.width / 2; let y = rect.top + rect.height / 2; let win = el.ownerDocument.defaultView; while (win && win !== win.top) { const frame = win.frameElement; if (!frame) break; const frameRect = frame.getBoundingClientRect(); x += frameRect.left; y += frameRect.top; win = win.parent; } return { x, y }; };
   visit(document);
-  const candidates = roots.flatMap((root) => [...(root.querySelectorAll?.('button,[role=button]') || [])]).filter((el) => visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true');
-  const button = candidates.find((el) => /confirm[_-]?btn/i.test(String(el.className || '')) && label(el) === '발행') || candidates.find((el) => label(el) === '발행' && el.getBoundingClientRect().top >= 180);
-  if (!button) return { clicked: false, reason: 'final_button_not_found' };
+  const candidates = roots.flatMap((root) => [...(root.querySelectorAll?.('button,[role=button],a') || [])]).filter((el) => visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true');
+  const button = candidates.find((el) => /confirm[_-]?btn/i.test(String(el.className || '')) && /^발행$/.test(label(el))) || candidates.find((el) => /^발행$/.test(label(el)) && el.getBoundingClientRect().top >= 180);
+  if (!button) return { found: false, reason: 'final_button_not_found' };
   button.scrollIntoView({ block: 'center', inline: 'center' });
-  button.focus?.();
-  button.click();
-  return { clicked: true, className: String(button.className || '').slice(0, 160) };
+  return { found: true, point: point(button), className: String(button.className || '').slice(0, 160) };
 })()`;
 
 async function clickNaverFinalPublish(tabId) {
-  const result = await send(tabId, 'Runtime.evaluate', { expression: CLICK_NAVER_FINAL_PUBLISH, returnByValue: true, awaitPromise: false });
+  const result = await send(tabId, 'Runtime.evaluate', { expression: FIND_NAVER_FINAL_PUBLISH, returnByValue: true, awaitPromise: false });
   const value = result?.result?.value || {};
-  if (!value.clicked) throw new Error('최종 발행 버튼을 실제로 클릭하지 못했습니다. 공개하지 않았습니다.');
-  return value;
+  if (!value.found || !Number.isFinite(value.point?.x) || !Number.isFinite(value.point?.y)) {
+    throw new Error('최종 발행 버튼을 실제로 찾지 못했습니다. 공개하지 않았습니다.');
+  }
+  await click(tabId, value.point);
+  return { clicked: true, className: value.className || '' };
 }
 
 async function autoPublishApprovedNaver(tabId, draft, report) {
@@ -1582,7 +1584,7 @@ async function autoPublishApprovedNaver(tabId, draft, report) {
     attached = true;
     const initialPublishState = await getNaverPublishPageState(tabId);
     await recordAutoFillTrace({ publishStage: 'initial-controls', publishPageState: initialPublishState });
-    // 카테고리는 발행 설정 패널에서 사용자가 선택한다. 초기 글쓰기 화면에서는 URL이나 카테고리 텍스트가 아직 노출되지 않을 수 있으므로 상단 발행 버튼만 먼저 확인한다.
+    // 글쓰기 URL에 카테고리 42를 지정했지만, 발행 설정 패널에서 실제 선택 상태를 다시 확인한다.
     let state = initialPublishState?.trigger
       ? initialPublishState
       : await waitForNaverPublishState(tabId, (value) => value.trigger, 14);

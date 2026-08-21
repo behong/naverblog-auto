@@ -275,10 +275,16 @@ async function runScheduledGoldbox(limit = 4) {
 
 function installAutoAlarms() {
   for (const hour of [7, 12, 18]) chrome.alarms.create(`coupang-goldbox-${hour}`, { when: nextLocalOccurrence(hour), periodInMinutes: 1440 });
-  // 새 버전 설치 직후에는 미발행 상품 1건만 자동 실행해 전체 흐름을 점검한다.
+}
+
+async function scheduleOneTimeSmokeTest() {
+  const state = await chrome.storage.local.get('coupangAutoSmokeTestVersion');
+  if (state.coupangAutoSmokeTestVersion === '0.2.1') return;
+  await chrome.storage.local.set({ coupangAutoSmokeTestVersion: '0.2.1' });
   chrome.alarms.create('coupang-goldbox-test', { when: Date.now() + 60 * 1000 });
 }
 
+scheduleOneTimeSmokeTest().catch((error) => console.error('Coupang smoke test scheduling failed', error));
 chrome.runtime.onInstalled.addListener(installAutoAlarms);
 chrome.runtime.onStartup.addListener(installAutoAlarms);
 chrome.alarms.onAlarm.addListener((alarm) => {

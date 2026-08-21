@@ -155,12 +155,21 @@ async function pollApprovedDraft() {
   if (!response.ok) return;
   const payload = await response.json().catch(() => ({}));
   if (!payload?.ok || !payload.result?.draft) return;
-  let clipboardPrepTabId = null;
-  let naverAutomationTabId = null;
-  let naverAutomationWindowId;
-  let claimAcquired = false;
-  try {
-    const draft = normalizeDraft({ ...(payload.result.draft || {}), product: payload.result.product || null });
+    let clipboardPrepTabId = null;
+    let naverAutomationTabId = null;
+    let naverAutomationWindowId;
+    let claimAcquired = false;
+    try {
+      const batchId = String(payload.result.batch_id || '');
+      const claimResponse = await fetch(`${BLOGAUTO_ORIGIN}/api/coupang/extension/approved-draft/claim`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Naver-Draft-Device': deviceToken },
+        body: JSON.stringify({ batch_id: batchId }),
+      });
+      const claimPayload = await claimResponse.json().catch(() => ({}));
+      if (!claimResponse.ok || claimPayload?.result?.claimed !== true) throw new Error('다른 쿠팡 전용 확장이 이미 이 승인 배치를 가져갔습니다.');
+      claimAcquired = true;
+      const draft = normalizeDraft({ ...(payload.result.draft || {}), product: payload.result.product || null });
 
     // 별도 팝업은 사용하지 않는다. 페어링한 blogauto 탭과 같은 일반 Chrome 창에
     // 전용 자동화 탭만 열고, 완료·실패 후 자동화가 만든 탭들만 닫는다.
@@ -183,14 +192,6 @@ async function pollApprovedDraft() {
 
     const naverWriteUrl = String(payload.result.naver_write_url || "https://blog.naver.com/GoBlogWrite.naver?categoryNo=42");
     await chrome.tabs.update(naverAutomationTabId, { url: naverWriteUrl, active: true });
-    const claimResponse = await fetch(`${BLOGAUTO_ORIGIN}/api/coupang/extension/approved-draft/claim`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Naver-Draft-Device": deviceToken },
-      body: JSON.stringify({ batch_id: payload.result.batch_id || "" }),
-    });
-    const claimPayload = await claimResponse.json().catch(() => ({}));
-    if (!claimResponse.ok || claimPayload?.result?.claimed !== true) throw new Error("다른 쿠팡 전용 확장이 이미 이 승인 배치를 가져갔습니다.");
-    claimAcquired = true;
     await recordApprovalDispatchTrace({ step: "naver_automation_tab_opened", error: "", batchId: payload.result.batch_id || "" });
   } catch (error) {
     const errorMessage = String(error?.message || "알 수 없는 오류").slice(0, 500);

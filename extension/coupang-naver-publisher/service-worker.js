@@ -1435,6 +1435,42 @@ const NAVER_PUBLISH_PAGE_STATE = `(() => {
   return { settingsOpen, publicSelected, category42Verified, trigger: trigger ? point(trigger) : null, publicControl: publicControl ? point(publicControl) : null, confirm: confirmPublish ? point(confirmPublish) : null, publishCandidates: publishButtons.slice(0, 8).map(describe) };
 })()`;
 
+const OPEN_COUPANG_CATEGORY = `(() => {
+  const visited = new Set(); const roots = [];
+  const visit = (root) => { if (!root || visited.has(root)) return; visited.add(root); roots.push(root); for (const frame of root.querySelectorAll ? root.querySelectorAll('iframe') : []) { try { if (frame.contentDocument) visit(frame.contentDocument); } catch (_) {} } for (const host of root.querySelectorAll ? root.querySelectorAll('*') : []) { try { if (host.shadowRoot) visit(host.shadowRoot); } catch (_) {} } };
+  const visible = (el) => { const style = el?.ownerDocument?.defaultView?.getComputedStyle(el); const rect = el?.getBoundingClientRect?.(); return Boolean(style && rect && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width >= 8 && rect.height >= 8); };
+  const label = (el) => ((el?.getAttribute?.('aria-label') || '') + ' ' + (el?.getAttribute?.('title') || '') + ' ' + (el?.innerText || el?.textContent || '')).replace(/\\s+/g, ' ').trim();
+  visit(document);
+  const controls = roots.flatMap((root) => [...(root.querySelectorAll?.('button,[role=button],select,[aria-haspopup="listbox"],[aria-haspopup="true"]') || [])]).filter(visible);
+  if (controls.some((el) => /개이득 쿠팡쇼핑/.test(label(el)) || String(el.value || '') === '42')) return { alreadySelected: true };
+  const current = controls.find((el) => /개이득 (토스)?쇼핑|카테고리/.test(label(el)));
+  if (!current) return { clicked: false, reason: 'category_control_not_found' };
+  current.click();
+  return { clicked: true };
+})()`;
+
+const SELECT_COUPANG_CATEGORY = `(() => {
+  const visited = new Set(); const roots = [];
+  const visit = (root) => { if (!root || visited.has(root)) return; visited.add(root); roots.push(root); for (const frame of root.querySelectorAll ? root.querySelectorAll('iframe') : []) { try { if (frame.contentDocument) visit(frame.contentDocument); } catch (_) {} } for (const host of root.querySelectorAll ? root.querySelectorAll('*') : []) { try { if (host.shadowRoot) visit(host.shadowRoot); } catch (_) {} } };
+  const visible = (el) => { const style = el?.ownerDocument?.defaultView?.getComputedStyle(el); const rect = el?.getBoundingClientRect?.(); return Boolean(style && rect && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width >= 8 && rect.height >= 8); };
+  const label = (el) => ((el?.getAttribute?.('aria-label') || '') + ' ' + (el?.getAttribute?.('title') || '') + ' ' + (el?.innerText || el?.textContent || '')).replace(/\\s+/g, ' ').trim();
+  visit(document);
+  const candidates = roots.flatMap((root) => [...(root.querySelectorAll?.('[role="option"],[role="menuitem"],li,button,a,[data-category-name]') || [])]).filter(visible);
+  const option = candidates.find((el) => /개이득 쿠팡쇼핑/.test(label(el)) || String(el.getAttribute?.('data-category-name') || '') === '개이득 쿠팡쇼핑' || String(el.getAttribute?.('data-category-no') || '') === '42');
+  if (!option) return { selected: false, reason: 'coupang_category_option_not_found' };
+  option.click();
+  return { selected: true, label: label(option).slice(0, 100) };
+})()`;
+
+async function selectCoupangCategory(tabId) {
+  const opened = await send(tabId, 'Runtime.evaluate', { expression: OPEN_COUPANG_CATEGORY, returnByValue: true, awaitPromise: false });
+  if (opened?.result?.value?.alreadySelected) return { alreadySelected: true };
+  if (!opened?.result?.value?.clicked) return opened?.result?.value || { selected: false, reason: 'category_control_not_found' };
+  await sleep(450);
+  const selected = await send(tabId, 'Runtime.evaluate', { expression: SELECT_COUPANG_CATEGORY, returnByValue: true, awaitPromise: false });
+  return selected?.result?.value || { selected: false, reason: 'category_select_failed' };
+}
+
 async function getNaverPublishPageState(tabId) {
   const result = await send(tabId, 'Runtime.evaluate', { expression: NAVER_PUBLISH_PAGE_STATE, returnByValue: true, awaitPromise: false });
   return result?.result?.value || {};
@@ -1555,6 +1591,9 @@ async function autoPublishApprovedNaver(tabId, draft, report) {
     state = await waitForNaverPublishState(tabId, (value) => value.settingsOpen, 10);
     await recordAutoFillTrace({ publishStage: 'settings-open-check', publishPageState: state || await getNaverPublishPageState(tabId) });
     if (!state?.settingsOpen) throw new Error('네이버 공개 설정 창을 확인하지 못했습니다. 공개하지 않았습니다.');
+    const categorySelection = await selectCoupangCategory(tabId);
+    await recordAutoFillTrace({ publishStage: 'category-selection', categorySelection });
+    state = await waitForNaverPublishState(tabId, (value) => value.category42Verified, 10);
     if (!state?.category42Verified) throw new Error('발행 설정에서 쿠팡 카테고리 선택을 확인하지 못했습니다. 공개하지 않았습니다.');
     if (!state.publicSelected) {
       if (!state.publicControl) throw new Error('전체공개 선택 항목을 확인하지 못했습니다. 공개하지 않았습니다.');

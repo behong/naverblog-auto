@@ -233,7 +233,7 @@ function inspectCoupangProductDetail() {
     const match = text.match(new RegExp(`(${label}):\\s*(.+?)(?=\\s+(?:${labelPattern}):|\\s+쿠팡상품번호:|$)`, 'i'));
     return match ? `${match[1].replace(/\\\\/g, '')}: ${clean(match[2]).slice(0, 120)}` : '';
   }).filter(Boolean).slice(0, 4);
-  const compositionMatch = text.match(/(?:개당\\s*)?중량\\s*×\\s*수량:\\s*(.+?)(?=\\s+(?:적립|쿠팡캐시|쿠페이|수량빼기|소비기한|보관방법|개당 중량|쿠팡상품번호):|$)/);
+  const compositionMatch = text.match(/(?:개당\s*)?중량\s*×\s*수량:\s*(.+?)(?=\s+(?:적립|쿠팡캐시|쿠페이|수량빼기|소비기한|보관방법|개당 중량|쿠팡상품번호):|$)/);
   const titleCandidates = [
     document.querySelector('.prod-buy-header__title')?.textContent,
     document.querySelector('h1')?.textContent,

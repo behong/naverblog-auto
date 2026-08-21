@@ -1415,14 +1415,16 @@ const NAVER_PUBLISH_PAGE_STATE = `(() => {
   const text = roots.map((root) => root.body?.innerText || root.textContent || '').join('\\n');
   const publishButtons = controls.filter((el) => {
     if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
-    const hint = (label(el) + ' ' + (el.className || '') + ' ' + (el.getAttribute('data-log-click') || '') + ' ' + (el.getAttribute('data-click') || '')).toLowerCase();
-    return label(el) === '발행' || /(^|[-_\\s])publish($|[-_\\s])|publish-button|write-publish|wp\\.publish/.test(hint);
+    const buttonLabel = label(el);
+    const hint = (buttonLabel + ' ' + (el.className || '') + ' ' + (el.getAttribute('data-log-click') || '') + ' ' + (el.getAttribute('data-click') || '')).toLowerCase();
+    return /(^|\\s)발행(?:하기)?($|\\s)/.test(buttonLabel) || /(^|[-_\\s])publish($|[-_\\s])|publish-button|write-publish|wp\\.publish/.test(hint);
   });
   const settingsOpen = /전체공개|이웃공개|비공개|발행 설정|공개 설정/.test(text);
   const publicRadio = roots.flatMap((root) => [...(root.querySelectorAll?.('input#open_public') || [])])[0] || null;
   const publicControl = controls.find((el) => /전체공개/.test(label(el))) || (publicRadio?.parentElement && visible(publicRadio.parentElement) ? publicRadio.parentElement : null);
   const publicSelected = Boolean(publicRadio?.checked) || controls.some((el) => /전체공개/.test(label(el)) && (el.checked === true || el.getAttribute('aria-checked') === 'true' || /selected|checked|active|on/.test(String(el.className || ''))));
-  const category42Visible = /개이득 쿠팡쇼핑/.test(text) || /categoryNo\\s*[=:]\\s*42/.test(text);
+  const selectedCategoryText = roots.flatMap((root) => [...(root.querySelectorAll?.('select option:checked,[aria-selected="true"],[role="option"][aria-selected="true"],[data-category-name]') || [])]).map((el) => label(el) + ' ' + (el.value || '')).join(' ');
+  const category42Visible = /개이득 쿠팡쇼핑/.test(text + ' ' + selectedCategoryText) || /(?:category|카테고리)(?:No|번호)?\\s*[=:]\\s*42/.test(text + ' ' + selectedCategoryText);
   const category42Url = new URL(location.href).searchParams.get('categoryNo') === '42';
   const category42Verified = category42Visible || category42Url;
   const dialogPublish = publishButtons.find((el) => { const chain = []; for (let node = el; node && chain.length < 8; node = node.parentElement) chain.push(node); return chain.some((node) => /dialog|modal|layer|popup/i.test(String(node?.className || '')) || node?.getAttribute?.('role') === 'dialog'); });

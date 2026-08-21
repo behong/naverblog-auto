@@ -523,12 +523,34 @@ generateButton.addEventListener('click', async () => {
       throw new Error('쿠팡 파트너스 골드박스 탭에서만 사용할 수 있습니다.');
     }
     const results = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: generateFirstPartnerLink });
+    const frames = results.map((result) => ({ frame_id: result.frameId, result: result.result || {} }));
+    const storedResults = frames.map(({ result }) => {
+      const pageUrl = String(result.page_url || '');
+      const productId = pageUrl.match(/[?&]product%5BproductId%5D=(\d+)/i)?.[1] || pageUrl.match(/[?&]product\[productId\]=(\d+)/i)?.[1] || '';
+      const itemId = pageUrl.match(/[?&]product%5BitemId%5D=(\d+)/i)?.[1] || pageUrl.match(/[?&]product\[itemId\]=(\d+)/i)?.[1] || '';
+      const vendorItemId = pageUrl.match(/[?&]product%5BvendorItemId%5D=(\d+)/i)?.[1] || pageUrl.match(/[?&]product\[vendorItemId\]=(\d+)/i)?.[1] || '';
+      return {
+        ...(result.candidate || {}),
+        product_id: productId,
+        item_id: itemId,
+        vendor_item_id: vendorItemId,
+        generated_urls: Array.isArray(result.generated_urls) ? result.generated_urls : [],
+        page_url: pageUrl,
+      };
+    }).filter((item) => item.product_id && item.generated_urls.length);
+    if (storedResults.length) {
+      await chrome.storage.local.set({
+        coupangGoldboxPartnerLinkResults: storedResults,
+        coupangGoldboxPartnerLinkResultsUpdatedAt: Date.now(),
+      });
+    }
     const payload = {
       source: 'coupang-partners-goldbox-link-generation',
       captured_at: new Date().toISOString(),
       page_url: tab.url,
       publish_executed: false,
-      frames: results.map((result) => ({ frame_id: result.frameId, result: result.result || {} })),
+      frames,
+      stored_results: storedResults,
     };
     await downloadJson(payload, `coupang-goldbox-link-result-${new Date().toISOString().slice(0, 10)}.json`);
     const succeeded = results.some((result) => result.result?.link_detected);

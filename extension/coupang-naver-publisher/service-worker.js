@@ -1458,8 +1458,12 @@ const OPEN_COUPANG_CATEGORY = `(() => {
   if (selectedControl) return { alreadySelected: true, selectedLabel: label(selectedControl).slice(0, 100) };
   const current = controls.find((el) => /개이득 (토스)?쇼핑|카테고리/.test(label(el)) && !el.querySelector?.('li,[role="option"]'));
   if (!current) return { clicked: false, reason: 'category_control_not_found' };
-  current.click();
-  return { clicked: true };
+  const clickTarget = current.closest?.('button,[role="button"],[aria-haspopup],a,select') || current.parentElement || current;
+  const rect = clickTarget.getBoundingClientRect();
+  let x = rect.left + rect.width / 2; let y = rect.top + rect.height / 2;
+  let win = clickTarget.ownerDocument.defaultView;
+  while (win && win !== win.top) { const frame = win.frameElement; if (!frame) break; const frameRect = frame.getBoundingClientRect(); x += frameRect.left; y += frameRect.top; win = win.parent; }
+  return { clicked: false, point: { x, y }, controlLabel: label(clickTarget).slice(0, 100) };
 })()`;
 
 const SELECT_COUPANG_CATEGORY = `(() => {
@@ -1491,8 +1495,10 @@ const SELECT_COUPANG_CATEGORY = `(() => {
 async function selectCoupangCategory(tabId) {
   const opened = await send(tabId, 'Runtime.evaluate', { expression: OPEN_COUPANG_CATEGORY, returnByValue: true, awaitPromise: false });
   if (opened?.result?.value?.alreadySelected) return { alreadySelected: true };
-  if (!opened?.result?.value?.clicked) return opened?.result?.value || { selected: false, reason: 'category_control_not_found' };
-  await sleep(500);
+  const openValue = opened?.result?.value || { selected: false, reason: 'category_control_not_found' };
+  if (!openValue.point || !Number.isFinite(openValue.point.x) || !Number.isFinite(openValue.point.y)) return openValue;
+  await click(tabId, openValue.point);
+  await sleep(700);
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const selected = await send(tabId, 'Runtime.evaluate', { expression: SELECT_COUPANG_CATEGORY, returnByValue: true, awaitPromise: false });
     const value = selected?.result?.value || { selected: false, reason: 'category_select_failed' };

@@ -133,7 +133,6 @@ def build_coupang_post(product: Product) -> dict[str, object]:
         "상품 자세히 보기",
         affiliate_url,
         COUPANG_DISCLOSURE,
-        hashtag_line,
     ))
     return {
         "title": title,

@@ -336,9 +336,14 @@ function inspectCoupangProductDetail() {
   };
 }
 
-async function generateFirstPartnerLink() {
+async function generateFirstPartnerLink(targetCandidate = {}) {
   const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-  const image = document.querySelector('img[alt="product"]');
+  const targetName = clean(targetCandidate.product_name);
+  const targetImage = clean(targetCandidate.preview_image_url);
+  const images = Array.from(document.querySelectorAll('img[alt="product"]'));
+  const image = images.find((node) => targetImage && (node.currentSrc || node.src || '') === targetImage)
+    || images.find((node) => targetName && clean((node.parentElement?.parentElement || node.parentElement)?.textContent).includes(targetName.slice(0, 24)))
+    || images[0];
   const card = image?.parentElement?.parentElement || image?.parentElement;
   const button = card?.querySelector('button.btn-generate-link') || Array.from(card?.querySelectorAll('button') || [])
     .find((node) => clean(node.textContent) === '링크 생성');
@@ -524,7 +529,10 @@ generateButton.addEventListener('click', async () => {
     if (!tab?.id || !String(tab.url || '').startsWith('https://partners.coupang.com/')) {
       throw new Error('쿠팡 파트너스 골드박스 탭에서만 사용할 수 있습니다.');
     }
-    const results = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: generateFirstPartnerLink });
+    const stored = await chrome.storage.local.get('coupangGoldboxCandidates');
+    const candidates = Array.isArray(stored.coupangGoldboxCandidates) ? stored.coupangGoldboxCandidates : [];
+    const targetCandidate = candidates[0] || {};
+    const results = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: generateFirstPartnerLink, args: [targetCandidate] });
     const frames = results.map((result) => ({ frame_id: result.frameId, result: result.result || {} }));
     const storedResults = frames.map(({ result }) => {
       const pageUrl = String(result.page_url || '');
@@ -626,8 +634,10 @@ collectButton.addEventListener('click', async () => {
       setStatus('후보 0건입니다. 화면 진단 JSON을 저장했습니다. 이 파일을 보내주시면 실제 카드 구조에 맞춰 보완하겠습니다.');
       return;
     }
-    await downloadJson({ source: 'coupang-partners-goldbox', captured_at: new Date().toISOString(), page_url: tab.url, frames, candidates }, `coupang-goldbox-candidates-${date}.json`);
-    setStatus(`${candidates.length}건 후보를 JSON 파일로 저장했습니다. 가격·링크·원본 이미지는 다음 검증 단계에서 다시 확인합니다.`);
+    const sortedCandidates = [...candidates].sort((a, b) => Number(a.displayed_sale_price || Infinity) - Number(b.displayed_sale_price || Infinity));
+    await chrome.storage.local.set({ coupangGoldboxCandidates: sortedCandidates, coupangGoldboxCandidatesUpdatedAt: Date.now() });
+    await downloadJson({ source: 'coupang-partners-goldbox', captured_at: new Date().toISOString(), page_url: tab.url, frames, candidates: sortedCandidates }, `coupang-goldbox-candidates-${date}.json`);
+    setStatus(`${sortedCandidates.length}건 후보를 가격순으로 저장했습니다. 최저가 후보: ${sortedCandidates[0]?.product_name || '확인 필요'} / ${Number(sortedCandidates[0]?.displayed_sale_price || 0).toLocaleString()}원`);
   } catch (error) {
     setStatus(`저장하지 않았습니다: ${error instanceof Error ? error.message : String(error)}`);
   } finally {

@@ -27,7 +27,7 @@ def main() -> None:
                 SELECT COUNT(*) AS count
                 FROM scheduled_toss_publish_items
                 WHERE schedule_date = %s
-                  AND approval_batch_id = %s
+                  AND master_batch_id = %s
                 """,
                 (today, str(batch['id'])),
             ).fetchone()

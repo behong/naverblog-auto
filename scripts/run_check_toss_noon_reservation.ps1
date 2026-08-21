@@ -12,6 +12,7 @@ try {
     Write-Output $result
 } catch {
     $safeMessage = $_.Exception.Message -replace '[\r\n]+', ' '
-    Add-Content -Path (Join-Path $projectRoot 'logs\toss-noon-reservation-check.log') -Value "$timestamp {\"check\":\"toss_noon_reservation\",\"ok\":false,\"error\":\"$safeMessage\"}"
+    $payload = @{ check = 'toss_noon_reservation'; ok = $false; error = $safeMessage } | ConvertTo-Json -Compress
+    Add-Content -Path (Join-Path $projectRoot 'logs\toss-noon-reservation-check.log') -Value "$timestamp $payload"
     throw
 }

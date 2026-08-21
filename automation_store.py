@@ -494,7 +494,11 @@ def latest_unclaimed_approved_publication() -> dict[str, Any] | None:
             """
             SELECT id, summary, source, created_at, decided_at
             FROM publication_approval_batches
-            WHERE status = 'APPROVED' AND item_count = 1 AND extension_claimed_at IS NULL
+            WHERE status = 'APPROVED'
+              AND item_count = 1
+              AND extension_claimed_at IS NULL
+              AND publish_state = 'NOT_STARTED'
+              AND source NOT LIKE 'toss-draft-window:%'
             ORDER BY decided_at DESC NULLS LAST, created_at DESC
             LIMIT 1
             """
@@ -690,7 +694,11 @@ def claim_latest_approved_publication() -> dict[str, Any] | None:
             """
             SELECT id, summary, source, created_at, decided_at
             FROM publication_approval_batches
-            WHERE status = 'APPROVED' AND item_count = 1 AND extension_claimed_at IS NULL
+            WHERE status = 'APPROVED'
+              AND item_count = 1
+              AND extension_claimed_at IS NULL
+              AND publish_state = 'NOT_STARTED'
+              AND source NOT LIKE 'toss-draft-window:%'
             ORDER BY decided_at DESC NULLS LAST, created_at DESC
             LIMIT 1
             FOR UPDATE SKIP LOCKED

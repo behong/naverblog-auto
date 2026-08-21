@@ -10,6 +10,7 @@ const APPROVAL_ALARM = "coupangNaverPublisherApprovalPoll";
 const clipboardPrepPorts = new Map();
 let imageClipboardPort = null;
 let creatingImageClipboardDocument = null;
+let approvalDispatchInFlight = false;
 chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
 // 서비스 워커가 어떤 확장 이벤트로 다시 깨어나도 다음 승인 폴링 알람을 보장한다.
 chrome.alarms.create(APPROVAL_ALARM, { periodInMinutes: 1 });
@@ -137,7 +138,10 @@ async function recordApprovalDispatchTrace(patch) {
 }
 
 async function pollApprovedDraft() {
-  const { [DEVICE_TOKEN_KEY]: deviceToken, [PAIR_TAB_ID_KEY]: pairTabId } = await chrome.storage.local.get([DEVICE_TOKEN_KEY, PAIR_TAB_ID_KEY]);
+  if (approvalDispatchInFlight) return;
+  approvalDispatchInFlight = true;
+  try {
+    const { [DEVICE_TOKEN_KEY]: deviceToken, [PAIR_TAB_ID_KEY]: pairTabId } = await chrome.storage.local.get([DEVICE_TOKEN_KEY, PAIR_TAB_ID_KEY]);
   if (!deviceToken) return;
   await recordApprovalDispatchTrace({ step: "polling", error: "" });
   const response = await fetch(`${BLOGAUTO_ORIGIN}/api/coupang/extension/approved-draft`, {
@@ -203,6 +207,9 @@ async function pollApprovedDraft() {
     }
     await recordApprovalDispatchTrace({ step: "dispatch_failed", error: errorMessage, batchId });
     throw error;
+    }
+  } finally {
+    approvalDispatchInFlight = false;
   }
 }
 

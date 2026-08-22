@@ -1456,7 +1456,8 @@ const NAVER_PUBLISH_PAGE_STATE = `(() => {
   });
   const selectedCategoryControlText = selectedCategoryControls.map((el) => label(el) + ' ' + (el.value || '')).join(' ');
   const selectedCategoryAll = (selectedCategoryText + ' ' + selectedCategoryControlText).replace(/\\s+/g, '');
-  const category42Visible = (/(?:개이득)?쿠팡쇼핑/.test(selectedCategoryAll) && !/토스쇼핑/.test(selectedCategoryAll)) || /(?:category|카테고리)(?:No|번호)?\\s*[=:]\\s*42/.test(selectedCategoryText + ' ' + selectedCategoryControlText);
+  const categoryEvidence = controls.filter((el) => { const t = label(el).replace(/\\s+/g, ''); return /개이득?쿠팡쇼핑|쿠팡쇼핑/.test(t) && !/토스쇼핑/.test(t) && !el.querySelector?.('li,[role="option"],option'); });
+  const category42Visible = (/(?:개이득)?쿠팡쇼핑/.test(selectedCategoryAll) && !/토스쇼핑/.test(selectedCategoryAll)) || /(?:category|카테고리)(?:No|번호)?\\s*[=:]\\s*42/.test(selectedCategoryText + ' ' + selectedCategoryControlText) || categoryEvidence.length > 0;
   const category42Url = new URL(location.href).searchParams.get('categoryNo') === '42';
   // URL은 기본값 요청일 뿐 실제 선택 결과가 아니므로, URL만으로 발행 검증을 통과시키지 않는다.
   const category42Verified = category42Visible;

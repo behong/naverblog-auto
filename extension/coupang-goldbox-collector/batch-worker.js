@@ -282,12 +282,15 @@ async function runScheduledGoldbox(limit = 4) {
     const localState = await chrome.storage.local.get('coupangCollectorDeviceToken');
     const syncState = await chrome.storage.sync.get('coupangCollectorDeviceToken');
     const deviceToken = String(localState.coupangCollectorDeviceToken || syncState.coupangCollectorDeviceToken || '').trim();
+    console.info('[Coupang] scheduled run token:', deviceToken.length >= 24 ? 'available' : 'missing');
     if (deviceToken.length >= 24 && localState.coupangCollectorDeviceToken !== deviceToken) {
       await chrome.storage.local.set({ coupangCollectorDeviceToken: deviceToken });
     }
     if (deviceToken.length < 24) throw new Error('쿠팡 수집기 연결 정보가 없습니다. 최초 1회만 관리자 페이지에서 연결해 주세요.');
     const tabId = await ensureGoldboxTab();
+    console.info('[Coupang] scheduled run starting on tab', tabId);
     const summary = await runBatch(tabId, { save: false });
+    console.info('[Coupang] scheduled run summary:', summary);
     const stored = await chrome.storage.local.get('coupangGoldboxPartnerLinkResults');
     const results = Array.isArray(stored.coupangGoldboxPartnerLinkResults) ? stored.coupangGoldboxPartnerLinkResults.filter((item) => item?.ok && item?.product_id && item?.generated_urls?.[0]) : [];
     const outcomes = [];
@@ -310,8 +313,8 @@ function installAutoAlarms() {
 
 async function scheduleOneTimeSmokeTest() {
   const state = await chrome.storage.local.get('coupangAutoSmokeTestVersion');
-  if (state.coupangAutoSmokeTestVersion === '0.2.3') return;
-  await chrome.storage.local.set({ coupangAutoSmokeTestVersion: '0.2.3' });
+  if (state.coupangAutoSmokeTestVersion === '0.2.4') return;
+  await chrome.storage.local.set({ coupangAutoSmokeTestVersion: '0.2.4' });
   chrome.alarms.create('coupang-goldbox-test', { when: Date.now() + 60 * 1000 });
 }
 

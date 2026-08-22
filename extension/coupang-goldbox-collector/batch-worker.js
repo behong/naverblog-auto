@@ -245,12 +245,20 @@ async function extractAutoDetail(tabId) {
 }
 
 async function verifyAutoImage(url) {
-  if (!/^https:\/\/.*coupangcdn\.com\//i.test(String(url || '')) || /(\/common\/|logo|sprite|icon)/i.test(String(url || ''))) return false;
-  try {
-    const response = await fetch(url, { cache: 'no-store', credentials: 'omit' });
-    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
-    return response.ok && contentType.startsWith('image/') && (await response.blob()).size >= 4096;
-  } catch (_) { return false; }
+  const source = String(url || '').trim();
+  if (!/^https:\/\/.*coupangcdn\.com\//i.test(source) || /(\/common\/|logo|sprite|icon)/i.test(source)) return { ok: false, reason: 'disallowed_image_url', url: source };
+  const attempts = [source, `${BLOGAUTO_ORIGIN}/api/coupang/image?url=${encodeURIComponent(source)}`];
+  const diagnostics = [];
+  for (const candidate of attempts) {
+    try {
+      const response = await fetch(candidate, { cache: 'no-store', credentials: 'omit' });
+      const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+      const size = (await response.blob()).size;
+      diagnostics.push({ status: response.status, content_type: contentType, size, via_proxy: candidate !== source });
+      if (response.ok && contentType.startsWith('image/') && size >= 4096) return { ok: true, via_proxy: candidate !== source, diagnostics };
+    } catch (error) { diagnostics.push({ error: error?.message || String(error), via_proxy: candidate !== source }); }
+  }
+  return { ok: false, reason: 'image_fetch_failed', url: source, diagnostics };
 }
 
 async function recordScheduledDiagnostic(payload, deviceToken) {
@@ -268,7 +276,7 @@ async function recordScheduledDiagnostic(payload, deviceToken) {
 
 async function requestAutoApproval(detail, affiliateUrl, deviceToken) {
   const imageVerified = await verifyAutoImage(detail.source_image_url);
-  if (!imageVerified) return { ok: false, error: '원본 대표 이미지를 검증하지 못했습니다.' };
+  if (!imageVerified.ok) return { ok: false, error: '원본 대표 이미지를 검증하지 못했습니다.', image_diagnostics: imageVerified };
   const prices = [detail.normal_price, detail.sale_price, detail.conditional_price].map(Number).filter((value) => value > 0).sort((a, b) => b - a);
   const candidate = {
     product_id: detail.product_id,
@@ -320,7 +328,7 @@ async function runScheduledGoldbox(limit = 4) {
       const detail = await extractAutoDetail(tabId);
       const approval = await requestAutoApproval(detail, item.generated_urls[0], String(deviceToken));
       outcomes.push({ product_id: item.product_id, approval });
-      await recordScheduledDiagnostic({ run_id: runId, status: approval.ok ? 'AWAITING_APPROVAL' : 'FAILED', step: approval.ok ? '텔레그램 승인 요청 생성' : '텔레그램 승인 요청 실패', product_id: item.product_id, product_name: detail.product_name, error_message: approval.ok ? '' : approval.error, context: { approval } }, deviceToken);
+      await recordScheduledDiagnostic({ run_id: runId, status: approval.ok ? 'AWAITING_APPROVAL' : 'FAILED', step: approval.ok ? '텔레그램 승인 요청 생성' : '텔레그램 승인 요청 실패', product_id: item.product_id, product_name: detail.product_name, error_message: approval.ok ? '' : approval.error, context: { approval, image_diagnostics: approval.image_diagnostics || null } }, deviceToken);
     }
     await recordScheduledDiagnostic({ run_id: runId, status: 'AWAITING_APPROVAL', step: '예약 워커 완료·승인 대기', context: { outcomes } }, deviceToken);
     return { ok: true, summary, outcomes };

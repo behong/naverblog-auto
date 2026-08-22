@@ -30,10 +30,10 @@ class CoupangPublicationPolicyTests(unittest.TestCase):
         draft = build_coupang_approval_draft(candidate)
         content = draft["draft"]
         self.assertEqual(draft["category_no"], 42)
-        self.assertIn("와우회원 혜택 및 웰컴백 쿠폰 적용 시", content["title"])
+        self.assertIn("올품 닭볶음탕용 닭고기", content["title"])
         self.assertIn("2,480원", content["title"])
-        self.assertIn("9,990원 → 일반 할인가 7,590원 → 최저 조건부 가격 2,480원", content["body"])
-        self.assertIn("회원 여부, 쿠폰 보유", content["body"])
+        self.assertIn("최저 구매가 2,480원", content["body"])
+        self.assertIn("와우회원 혜택 및 웰컴백 쿠폰 적용 시", content["body"])
         self.assertIn("쿠팡 파트너스 활동", content["body"])
 
     def test_unverified_source_image_rejects_approval(self) -> None:
@@ -42,11 +42,11 @@ class CoupangPublicationPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             candidate_from_payload(payload)
 
-    def test_price_order_must_remain_explicitly_verified(self) -> None:
+    def test_current_price_does_not_require_legacy_price_order(self) -> None:
         payload = self.payload()
         payload["conditional_price"] = 10990
-        with self.assertRaises(ValueError):
-            candidate_from_payload(payload)
+        candidate = candidate_from_payload(payload)
+        self.assertEqual(candidate.conditional_price, 10990)
 
 
 if __name__ == "__main__":

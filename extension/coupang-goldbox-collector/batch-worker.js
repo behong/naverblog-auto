@@ -253,6 +253,19 @@ async function verifyAutoImage(url) {
   } catch (_) { return false; }
 }
 
+async function recordScheduledDiagnostic(payload, deviceToken) {
+  try {
+    await fetch(`${BLOGAUTO_ORIGIN}/api/coupang/extension/diagnostic`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Naver-Draft-Device': deviceToken },
+      body: JSON.stringify({ run_id: payload.run_id || undefined, ...payload, context: { source: 'extension-scheduled-worker', ...(payload.context || {}) } }),
+      cache: 'no-store',
+    });
+  } catch (error) {
+    console.warn('[Coupang] diagnostic upload failed:', error?.message || error);
+  }
+}
+
 async function requestAutoApproval(detail, affiliateUrl, deviceToken) {
   const imageVerified = await verifyAutoImage(detail.source_image_url);
   if (!imageVerified) return { ok: false, error: '원본 대표 이미지를 검증하지 못했습니다.' };
@@ -278,6 +291,7 @@ async function requestAutoApproval(detail, affiliateUrl, deviceToken) {
 async function runScheduledGoldbox(limit = 4) {
   if (scheduledRunActive) return { ok: false, error: '이미 자동 수집이 실행 중입니다.' };
   scheduledRunActive = true;
+  let runId = '';
   try {
     const localState = await chrome.storage.local.get('coupangCollectorDeviceToken');
     const syncState = await chrome.storage.sync.get('coupangCollectorDeviceToken');
@@ -288,9 +302,13 @@ async function runScheduledGoldbox(limit = 4) {
     }
     if (deviceToken.length < 24) throw new Error('쿠팡 수집기 연결 정보가 없습니다. 최초 1회만 관리자 페이지에서 연결해 주세요.');
     const tabId = await ensureGoldboxTab();
+    runId = crypto.randomUUID();
+    await recordScheduledDiagnostic({ run_id: runId, status: 'STARTED', step: '예약 워커 시작', context: { limit } }, deviceToken);
     console.info('[Coupang] scheduled run starting on tab', tabId);
+    await recordScheduledDiagnostic({ run_id: runId, status: 'DISCOVERED', step: '골드박스 탭 생성 완료', context: { tab_id: tabId } }, deviceToken);
     const summary = await runBatch(tabId, { save: false });
     console.info('[Coupang] scheduled run summary:', summary);
+    await recordScheduledDiagnostic({ run_id: runId, status: 'LINK_CREATED', step: '골드박스 후보·파트너스 링크 처리 완료', context: { summary } }, deviceToken);
     const stored = await chrome.storage.local.get('coupangGoldboxPartnerLinkResults');
     const results = Array.isArray(stored.coupangGoldboxPartnerLinkResults) ? stored.coupangGoldboxPartnerLinkResults.filter((item) => item?.ok && item?.product_id && item?.generated_urls?.[0]) : [];
     const outcomes = [];
@@ -302,8 +320,16 @@ async function runScheduledGoldbox(limit = 4) {
       const detail = await extractAutoDetail(tabId);
       const approval = await requestAutoApproval(detail, item.generated_urls[0], String(deviceToken));
       outcomes.push({ product_id: item.product_id, approval });
+      await recordScheduledDiagnostic({ run_id: runId, status: approval.ok ? 'AWAITING_APPROVAL' : 'FAILED', step: approval.ok ? '텔레그램 승인 요청 생성' : '텔레그램 승인 요청 실패', product_id: item.product_id, product_name: detail.product_name, error_message: approval.ok ? '' : approval.error, context: { approval } }, deviceToken);
     }
+    await recordScheduledDiagnostic({ run_id: runId, status: 'AWAITING_APPROVAL', step: '예약 워커 완료·승인 대기', context: { outcomes } }, deviceToken);
     return { ok: true, summary, outcomes };
+  } catch (error) {
+    const state = await chrome.storage.local.get('coupangCollectorDeviceToken');
+    const syncState = await chrome.storage.sync.get('coupangCollectorDeviceToken');
+    const token = String(state.coupangCollectorDeviceToken || syncState.coupangCollectorDeviceToken || '').trim();
+    if (token.length >= 24) await recordScheduledDiagnostic({ run_id: runId || undefined, status: 'FAILED', step: '예약 워커 예외 종료', error_message: error?.message || String(error) }, token);
+    throw error;
   } finally { scheduledRunActive = false; }
 }
 

@@ -744,6 +744,31 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/coupang/extension/diagnostic":
+            device_token = self.headers.get("X-Naver-Draft-Device", "")
+            if not extension_device_valid(device_token):
+                self._send_json({"ok": False, "error": "extension_unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                payload = self._read_json()
+                context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+                result = upsert_run({
+                    "run_id": payload.get("run_id"),
+                    "job_name": "coupang_scheduled_collector",
+                    "platform": "coupang",
+                    "status": str(payload.get("status") or "RUNNING"),
+                    "step": str(payload.get("step") or ""),
+                    "product_id": str(payload.get("product_id") or ""),
+                    "product_name": str(payload.get("product_name") or ""),
+                    "error_code": str(payload.get("error_code") or ""),
+                    "error_message": str(payload.get("error_message") or ""),
+                    "retry_count": int(payload.get("retry_count") or 0),
+                    "context": context,
+                })
+                self._send_json({"ok": True, "result": result})
+            except (ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         if parsed.path == "/api/coupang/collector/approval":
             device_token = self.headers.get("X-Naver-Draft-Device", "")
             if not extension_device_valid(device_token):

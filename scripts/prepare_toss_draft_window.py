@@ -3,7 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 from app import build_admin_toss_draft
-from automation_store import _connect, create_scheduled_toss_publish_items
+from automation_store import (
+    _connect,
+    create_auto_publication_batch,
+    create_scheduled_toss_publish_items,
+    toss_auto_publish_enabled,
+)
 from kst_time import korea_today
 from telegram_approval import send_publication_approval
 from toss_collector import collect_toss_listing
@@ -98,10 +103,12 @@ def main() -> int:
 
     # 시간대별 준비 완료 후 텔레그램에 단일 승인 요청을 전송한다.
     # 승인 전에는 대기열이 RELEASED로 전환될 수 없으므로 공개 발행은 시작되지 않는다.
-    batch = send_publication_approval(
-        prepared_items,
-        source=f"toss-draft-window:{window_key}",
-        ttl_minutes=120,
+    source = f"toss-draft-window:{window_key}"
+    auto_publish = toss_auto_publish_enabled()
+    batch = (
+        create_auto_publication_batch(prepared_items, source=source)
+        if auto_publish
+        else send_publication_approval(prepared_items, source=source, ttl_minutes=120)
     )
     queue_count = create_scheduled_toss_publish_items(
         str(batch["id"]),
@@ -116,7 +123,7 @@ def main() -> int:
                 "window_key": window_key,
                 "queued_count": queue_count,
                 "skipped": skipped,
-                "publish_state": "PENDING_APPROVAL",
+                "publish_state": "AUTO_APPROVED" if auto_publish else "PENDING_APPROVAL",
             },
             ensure_ascii=False,
         )

@@ -150,6 +150,7 @@ def _mobile_status_text() -> str:
     status = mobile_toss_status()
     queue = status["queue"]
     release_state = "⏸ 보류" if status["release_paused"] else "▶️ 활성"
+    publish_mode = "무승인 자동 발행" if status.get("auto_publish_enabled") else "텔레그램 승인 필요"
     return "\n".join(
         [
             f"📊 오늘 토스 발행 현황 · {status['date']}",
@@ -160,6 +161,7 @@ def _mobile_status_text() -> str:
             f"공개 전 실패: {queue['FAILED_PRE_SUBMIT']}건",
             f"결과 확인 필요: {queue['PUBLISH_UNKNOWN']}건",
             f"자동 발행: {release_state}",
+            f"발행 방식: {publish_mode}",
             "",
             "다음 초안 준비: 18:00 · 4건",
             "승인된 대기열은 20분 간격으로 1건씩 순차 처리됩니다.",
@@ -176,8 +178,8 @@ def _mobile_schedule_text() -> str:
             "12:00 · 토스 초안 2건 준비",
             "18:00 · 토스 초안 4건 준비",
             "",
-            "각 시간대의 준비가 끝나면 텔레그램 승인 요청이 도착합니다.",
-            "승인된 항목만 20분 간격으로 한 건씩 발행합니다.",
+            "검증을 통과한 항목은 20분 간격으로 한 건씩 자동 발행합니다.",
+            "성공 URL과 오류·중복 위험·결과 불명 상태만 텔레그램으로 알립니다.",
         ]
     )
 
@@ -192,7 +194,7 @@ def _mobile_help_text() -> str:
             "⏸ 자동 발행 보류: 이미 승인된 후속 발행을 안전하게 멈춥니다.",
             "▶️ 자동 발행 재개: 기존 승인 항목의 20분 간격 해제를 다시 허용합니다.",
             "",
-            "상품 공개는 별도의 텔레그램 승인 없이는 시작되지 않습니다.",
+            "⏸ 자동 발행 보류를 누르면 다음 순차 발행만 안전하게 멈출 수 있습니다.",
         ]
     )
 

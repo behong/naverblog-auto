@@ -379,6 +379,7 @@ def set_admin_toss_publisher_id(publisher_id: str) -> None:
 APPROVAL_ACTIONS = {"APPROVED", "HELD"}
 KOREA_TIMEZONE = ZoneInfo("Asia/Seoul")
 MOBILE_RELEASE_PAUSED_STATE_KEY = "mobile_toss_release_paused"
+TOSS_AUTO_PUBLISH_ENABLED_STATE_KEY = "toss_auto_publish_enabled"
 
 
 def korea_today() -> date:
@@ -410,6 +411,31 @@ def set_mobile_toss_release_paused(paused: bool) -> bool:
     return paused
 
 
+def toss_auto_publish_enabled() -> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT state_value FROM telegram_bot_state WHERE state_key = %s",
+            (TOSS_AUTO_PUBLISH_ENABLED_STATE_KEY,),
+        ).fetchone()
+    return str((row or {}).get("state_value") or "").strip() == "1"
+
+
+def set_toss_auto_publish_enabled(enabled: bool) -> bool:
+    value = "1" if enabled else "0"
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO telegram_bot_state (state_key, state_value)
+            VALUES (%s, %s)
+            ON CONFLICT (state_key) DO UPDATE SET
+                state_value = EXCLUDED.state_value,
+                updated_at = now()
+            """,
+            (TOSS_AUTO_PUBLISH_ENABLED_STATE_KEY, value),
+        )
+    return enabled
+
+
 def mobile_toss_status() -> dict[str, Any]:
     today = korea_today()
     with _connect() as conn:
@@ -438,6 +464,7 @@ def mobile_toss_status() -> dict[str, Any]:
     return {
         "date": today.isoformat(),
         "release_paused": mobile_toss_release_paused(),
+        "auto_publish_enabled": toss_auto_publish_enabled(),
         "queue": counts,
         "windows": [
             {"source": str(row["source"]), "status": str(row["status"]), "item_count": int(row["item_count"])}
@@ -1133,6 +1160,36 @@ def create_publication_approval_batch(
                 json.dumps(summary, ensure_ascii=False),
                 approval_chat_id,
                 expires_at,
+            ),
+        ).fetchone()
+    return dict(row or {})
+
+
+def create_auto_publication_batch(
+    summary: list[dict[str, Any]],
+    source: str = "toss-daily",
+) -> dict[str, Any]:
+    """Create a validated scheduled batch that the user explicitly authorized for unattended publishing."""
+    approval_chat_id = active_telegram_approval_chat_id()
+    if not approval_chat_id:
+        raise RuntimeError("TELEGRAM approval chat is not configured")
+    if not summary or len(summary) > 10:
+        raise ValueError("auto publication batch requires 1 to 10 items")
+    batch_id = uuid.uuid4()
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO publication_approval_batches
+                (id, status, source, item_count, summary, expected_chat_id, expires_at, decided_at)
+            VALUES (%s, 'APPROVED', %s, %s, %s::jsonb, %s, now() + interval '1 day', now())
+            RETURNING id, status, source, item_count, summary, created_at, expires_at, decided_at
+            """,
+            (
+                batch_id,
+                str(source or "toss-daily")[:100],
+                len(summary),
+                json.dumps(summary, ensure_ascii=False),
+                approval_chat_id,
             ),
         ).fetchone()
     return dict(row or {})

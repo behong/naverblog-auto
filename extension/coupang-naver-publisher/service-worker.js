@@ -212,10 +212,12 @@ async function pollApprovedDraft() {
   } catch (error) {
     const errorMessage = String(error?.message || "알 수 없는 오류").slice(0, 500);
     const batchId = String(payload?.result?.batch_id || "");
-    // 실패 시 글쓰기 탭을 닫지 않는다. 네이버의 변경사항 확인창으로 사용자를 멈추게 하지 않고,
-    // 현재 설정·진단 상태를 그대로 보존해 재시도와 원인 확인이 가능하도록 한다.
+    // 실패한 상품은 건너뛰고 다음 승인 배치를 진행한다. 사용자가 직접 연 탭은 보존한다.
     if (Number.isInteger(clipboardPrepTabId)) await chrome.tabs.remove(clipboardPrepTabId).catch(() => undefined);
     await closeImageClipboardDocument();
+    // 공개 전 실패 상품은 현재 작업만 건너뛰고, 실패 화면이 다음 상품을 막지 않도록
+    // 이 실행에서 만든 네이버 자동화 탭도 정리한다. 사용자 탭은 건드리지 않는다.
+    if (Number.isInteger(naverAutomationTabId)) await chrome.tabs.remove(naverAutomationTabId).catch(() => undefined);
     if (batchId && claimAcquired) {
       await extensionPublishRequest('/api/coupang/extension/publish/pre-submit-failure', {
         batch_id: batchId,
@@ -223,6 +225,9 @@ async function pollApprovedDraft() {
       }).catch(() => undefined);
     }
     await recordApprovalDispatchTrace({ step: "dispatch_failed", error: errorMessage, batchId });
+    // 현재 배치를 SKIPPED/FAILED_PRE_SUBMIT으로 기록한 뒤 다음 승인 배치를 바로 확인한다.
+    // finally에서 in-flight 플래그가 해제된 후 실행되도록 짧게 지연한다.
+    setTimeout(() => pollApprovedDraft().catch(() => undefined), 1500);
     throw error;
     }
   } finally {

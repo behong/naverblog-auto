@@ -661,6 +661,10 @@ class AppHandler(BaseHTTPRequestHandler):
                         {"ok": True, "result": {"csrf_token": session.csrf_token, "expires_at": session.expires_at}}
                     )
                     return
+                if parsed.path == "/api/admin/coupang/diagnostics":
+                    runs = [item for item in recent_runs(int(query.get("limit", ["40"])[0])) if item.get("platform") == "coupang"]
+                    self._send_admin_json({"ok": True, "result": runs})
+                    return
                 if parsed.path == "/api/admin/settings":
                     publisher = admin_toss_publisher_settings()
                     self._send_admin_json(

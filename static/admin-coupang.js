@@ -8,6 +8,7 @@
   const pairPublisher = document.querySelector('#pairPublisher');
   const connectionStatus = document.querySelector('#connectionStatus');
   const logout = document.querySelector('#logout');
+  const diagnostics = document.querySelector('#diagnostics');
 
   let csrfToken = '';
 
@@ -27,6 +28,20 @@
     loginPanel.style.display = 'none';
     dashboard.hidden = false;
     dashboard.style.display = 'block';
+  };
+
+  const loadDiagnostics = async () => {
+    if (!diagnostics) return;
+    try {
+      const rows = await api('/api/admin/coupang/diagnostics?limit=40');
+      diagnostics.textContent = rows.length ? rows.map((row) => {
+        const time = row.updated_at || row.started_at || '';
+        const detail = row.error_message || JSON.stringify(row.context || {});
+        return `[${time}] ${row.status} · ${row.step || '-'} · ${row.product_name || '-'}${detail ? `\n  ${detail}` : ''}`;
+      }).join('\n\n') : '아직 쿠팡 자동 실행 기록이 없습니다.';
+    } catch (error) {
+      diagnostics.textContent = `진단 로그를 불러오지 못했습니다: ${error.message || error}`;
+    }
   };
 
   const leaveDashboard = (message = '로그인 후 쿠팡 확장 연결 상태를 확인할 수 있습니다.') => {
@@ -142,6 +157,8 @@
       password.value = '';
       enterDashboard();
       setStatus(connectionStatus, '쿠팡 수집기와 쿠팡 발행 확장을 각각 한 번 연결하면 됩니다.');
+      loadDiagnostics();
+      setInterval(loadDiagnostics, 15000);
     } catch (error) {
       password.value = '';
       setStatus(loginStatus, error.message === 'too_many_attempts' ? '로그인 시도가 잠시 제한됐습니다. 나중에 다시 시도해 주세요.' : '비밀번호를 확인해 주세요.', 'error');
@@ -169,6 +186,8 @@
       if (!csrfToken) throw new Error('세션 정보가 없습니다.');
       enterDashboard();
       setStatus(connectionStatus, '쿠팡 수집기와 쿠팡 발행 확장을 각각 한 번 연결하면 됩니다.');
+      loadDiagnostics();
+      setInterval(loadDiagnostics, 15000);
     } catch (_) {
       leaveDashboard();
     }

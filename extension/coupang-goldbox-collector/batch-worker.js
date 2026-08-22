@@ -290,7 +290,10 @@ async function scheduleOneTimeSmokeTest() {
 }
 
 scheduleOneTimeSmokeTest().catch((error) => console.error('Coupang smoke test scheduling failed', error));
-chrome.runtime.onInstalled.addListener(installAutoAlarms);
+chrome.runtime.onInstalled.addListener(() => {
+  installAutoAlarms();
+  chrome.alarms.create('coupang-goldbox-test', { when: Date.now() + 60 * 1000 });
+});
 chrome.runtime.onStartup.addListener(installAutoAlarms);
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (!/^coupang-goldbox-/.test(alarm.name)) return;

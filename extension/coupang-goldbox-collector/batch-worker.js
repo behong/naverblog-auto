@@ -329,18 +329,26 @@ async function runScheduledGoldbox(limit = 4) {
     const results = Array.isArray(stored.coupangGoldboxPartnerLinkResults) ? stored.coupangGoldboxPartnerLinkResults.filter((item) => item?.ok && item?.product_id && item?.generated_urls?.[0]) : [];
     const outcomes = [];
     for (const item of results.slice(0, Math.max(1, Math.min(10, Number(limit) || 4)))) {
-      const detailUrl = `https://www.coupang.com/vp/products/${encodeURIComponent(item.product_id)}?itemId=${encodeURIComponent(item.item_id || '')}&vendorItemId=${encodeURIComponent(item.vendor_item_id || '')}`;
-      await chrome.tabs.update(tabId, { url: detailUrl });
-      await waitForUrl(tabId, /https:\/\/www\.coupang\.com\/vp\/products\//);
-      await sleep(1200);
-      const detail = await extractAutoDetail(tabId);
-      if (!detail.source_image_url && item.preview_image_url) detail.source_image_url = item.preview_image_url;
-      const approval = await requestAutoApproval(detail, item.generated_urls[0], String(deviceToken));
-      outcomes.push({ product_id: item.product_id, approval });
-      const imageDiagnostics = approval.image_diagnostics || null;
-      const diagnosticMessage = approval.ok || approval.skipped ? '' : `${approval.error}${imageDiagnostics ? ` [image=${JSON.stringify(imageDiagnostics).slice(0, 1200)}]` : ''}`;
-      const skippedDuplicate = Boolean(approval.skipped);
-      await recordScheduledDiagnostic({ run_id: runId, status: approval.ok ? 'AWAITING_APPROVAL' : skippedDuplicate ? 'SKIPPED' : 'FAILED', step: approval.ok ? '텔레그램 승인 요청 생성' : skippedDuplicate ? '이미 발행된 상품 건너뜀' : '텔레그램 승인 요청 실패', product_id: item.product_id, product_name: detail.product_name, error_message: diagnosticMessage, context: { approval, image_diagnostics: imageDiagnostics } }, deviceToken);
+      let detail = null;
+      try {
+        const detailUrl = `https://www.coupang.com/vp/products/${encodeURIComponent(item.product_id)}?itemId=${encodeURIComponent(item.item_id || '')}&vendorItemId=${encodeURIComponent(item.vendor_item_id || '')}`;
+        await chrome.tabs.update(tabId, { url: detailUrl });
+        await waitForUrl(tabId, /https:\/\/www\.coupang\.com\/vp\/products\//, 15000);
+        await sleep(1200);
+        detail = await extractAutoDetail(tabId);
+        if (!detail.source_image_url && item.preview_image_url) detail.source_image_url = item.preview_image_url;
+        const approval = await requestAutoApproval(detail, item.generated_urls[0], String(deviceToken));
+        outcomes.push({ product_id: item.product_id, approval });
+        const imageDiagnostics = approval.image_diagnostics || null;
+        const diagnosticMessage = approval.ok || approval.skipped ? '' : `${approval.error}${imageDiagnostics ? ` [image=${JSON.stringify(imageDiagnostics).slice(0, 1200)}]` : ''}`;
+        const skippedDuplicate = Boolean(approval.skipped);
+        await recordScheduledDiagnostic({ run_id: runId, status: approval.ok ? 'AWAITING_APPROVAL' : skippedDuplicate ? 'SKIPPED' : 'FAILED', step: approval.ok ? '텔레그램 승인 요청 생성' : skippedDuplicate ? '이미 발행된 상품 건너뜀' : '텔레그램 승인 요청 실패', product_id: item.product_id, product_name: detail.product_name, error_message: diagnosticMessage, context: { approval, image_diagnostics: imageDiagnostics } }, deviceToken);
+      } catch (error) {
+        const errorMessage = String(error?.message || error).slice(0, 500);
+        outcomes.push({ product_id: item.product_id, approval: { ok: false, error: errorMessage } });
+        await recordScheduledDiagnostic({ run_id: runId, status: 'FAILED', step: '상품별 처리 실패·다음 후보 진행', product_id: item.product_id, product_name: detail?.product_name || item.product_name || '', error_message: errorMessage, context: { item } }, deviceToken);
+        console.warn('[Coupang] candidate skipped:', item.product_id, errorMessage);
+      }
     }
     await recordScheduledDiagnostic({ run_id: runId, status: 'AWAITING_APPROVAL', step: '예약 워커 완료·승인 대기', context: { outcomes } }, deviceToken);
     return { ok: true, summary, outcomes };

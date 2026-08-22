@@ -312,6 +312,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (origin !== 'https://blogauto.hongzi.us' || token.length < 24) throw new Error('쿠팡 수집기 연결 요청이 올바르지 않습니다.');
         await chrome.storage.local.set({ coupangCollectorDeviceToken: token, coupangCollectorPairTabId: sender.tab?.id || null });
         await chrome.storage.sync.set({ coupangCollectorDeviceToken: token });
+        // 연결 직후에는 표식 상태와 관계없이 1건 자동 테스트를 예약한다.
+        chrome.alarms.create('coupang-goldbox-test', { when: Date.now() + 60 * 1000 });
         sendResponse({ ok: true });
       } catch (error) {
         sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });

@@ -129,28 +129,50 @@ async function execute(tabId, func, args = []) {
   return results[0]?.result || null;
 }
 
+function enumerateRenewedGoldboxCandidates() {
+  const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const money = (value) => Number(String(value || '').replace(/[^0-9]/g, '')) || 0;
+  const candidates = [];
+  for (const anchor of document.querySelectorAll('a[href*="/vp/products/"]')) {
+    const card = anchor.querySelector('.discount-product-unit') || anchor;
+    const title = clean(card.querySelector('.info_section__title, .info-section__title, [class*="title"]')?.textContent);
+    const sale = money(card.querySelector('.price_info__discount')?.textContent);
+    const normal = money(card.querySelector('.price_info__base')?.textContent);
+    const href = anchor.href || '';
+    const match = href.match(/\/vp\/products\/(\d+).*?[?&]itemId=(\d+).*?[?&]vendorItemId=(\d+)/);
+    const image = card.querySelector('.discount-product-unit__product_image img')?.currentSrc || card.querySelector('img')?.currentSrc || card.querySelector('img')?.src || '';
+    if (!title || !sale || !match) continue;
+    const [, productId, itemId, vendorItemId] = match;
+    const productImage = image.startsWith('//') ? `https:${image}` : image;
+    const params = new URLSearchParams({ 'product[itemId]': itemId, 'product[productId]': productId, 'product[vendorItemId]': vendorItemId, 'product[title]': title, 'product[originPrice]': String(normal || sale), 'product[salesPrice]': String(sale), 'product[image]': productImage, 'product[travel]': 'false' });
+    candidates.push({ candidate_id: `renewed-${productId}-${itemId}`, product_id: productId, item_id: itemId, vendor_item_id: vendorItemId, product_name: title, preview_image_url: productImage, normal_price: normal || sale, sale_price: sale, link_generation_url: `https://partners.coupang.com/#affiliate/ws/linkgeneration/PRODUCT/${productId}/${itemId}?${params.toString()}` });
+  }
+  return candidates.sort((a, b) => a.sale_price - b.sale_price).filter((item, index, all) => all.findIndex((other) => other.product_id === item.product_id) === index).slice(0, 20);
+}
+
 async function runBatch(tabId, options = {}) {
   // The previous single-link test leaves the tab on a link-generation route; always reset it first.
   await chrome.tabs.update(tabId, { url: GOLDBOX_URL });
-  await waitForUrl(tabId, /#affiliate\/ws\/best\/goldbox/);
-  await sleep(900);
-  const initial = await execute(tabId, enumerateGoldboxCandidates);
+  await sleep(1500);
+  let initial = await execute(tabId, enumerateGoldboxCandidates);
+  if (!Array.isArray(initial) || !initial.length) initial = await execute(tabId, enumerateRenewedGoldboxCandidates);
   if (!Array.isArray(initial) || !initial.length) throw new Error('골드박스 후보를 찾지 못했습니다. 목록을 다시 연 뒤 시도해 주세요.');
   const results = [];
   setProgress(0, initial.length);
   for (let index = 0; index < initial.length; index += 1) {
     const candidate = initial[index];
-    await chrome.tabs.update(tabId, { url: GOLDBOX_URL });
-    await waitForUrl(tabId, /#affiliate\/ws\/best\/goldbox/);
-    await sleep(700);
-    const clicked = await execute(tabId, clickGoldboxCandidate, [candidate]);
-    if (!clicked?.ok) {
-      results.push({ candidate, ok: false, error: clicked?.reason || 'candidate_click_failed' });
-      setProgress(index + 1, initial.length);
-      continue;
-    }
     try {
-      await waitForUrl(tabId, /#affiliate\/ws\/linkgeneration\//);
+      if (candidate.link_generation_url) {
+        await chrome.tabs.update(tabId, { url: candidate.link_generation_url });
+        await sleep(1800);
+      } else {
+        await chrome.tabs.update(tabId, { url: GOLDBOX_URL });
+        await waitForUrl(tabId, /#affiliate\/ws\/best\/goldbox/);
+        await sleep(700);
+        const clicked = await execute(tabId, clickGoldboxCandidate, [candidate]);
+        if (!clicked?.ok) throw new Error(clicked?.reason || 'candidate_click_failed');
+        await waitForUrl(tabId, /#affiliate\/ws\/linkgeneration\//);
+      }
       await sleep(1800);
       const captured = await execute(tabId, captureGeneratedLink);
       results.push({ candidate, ...captured, approval_only: true, publish_executed: false });

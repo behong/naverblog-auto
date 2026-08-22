@@ -378,13 +378,14 @@ async function scheduleOneTimeSmokeTest() {
     chrome.storage.local.get('coupangAutoSmokeTestCompleted'),
   ]);
   const deviceToken = String(localState.coupangCollectorDeviceToken || syncState.coupangCollectorDeviceToken || '').trim();
-  if (deviceToken.length < 24 || completed.coupangAutoSmokeTestCompleted === '0.2.5') return;
+  if (deviceToken.length < 24 || completed.coupangAutoSmokeTestCompleted === '0.2.6') return;
   if (!alarm) {
     console.info('[Coupang] scheduling smoke test because no test alarm exists');
     chrome.alarms.create('coupang-goldbox-test', { when: Date.now() + 60 * 1000 });
   }
 }
 
+installAutoAlarms();
 scheduleOneTimeSmokeTest().catch((error) => console.error('Coupang smoke test scheduling failed', error));
 chrome.runtime.onInstalled.addListener(() => {
   installAutoAlarms();
@@ -396,7 +397,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'coupang-goldbox-test') {
     runScheduledGoldbox(1).then((result) => {
       console.info('[Coupang] automatic test finished:', result);
-      return chrome.storage.local.set({ coupangAutoSmokeTestCompleted: '0.2.5' });
+      return chrome.storage.local.set({ coupangAutoSmokeTestCompleted: '0.2.6' });
     }).catch((error) => console.error('Coupang automatic test failed', error));
     return;
   }

@@ -153,12 +153,17 @@ function enumerateRenewedGoldboxCandidates() {
 async function runBatch(tabId, options = {}) {
   // The previous single-link test leaves the tab on a link-generation route; always reset it first.
   await chrome.tabs.update(tabId, { url: GOLDBOX_URL });
-  await sleep(3500);
+  await waitForUrl(tabId, /#affiliate\/ws\/best\/goldbox/, 20000).catch(() => undefined);
+  await sleep(5000);
   let initial = [];
-  for (let attempt = 0; attempt < 3 && !initial.length; attempt += 1) {
+  for (let attempt = 0; attempt < 4 && !initial.length; attempt += 1) {
     initial = await execute(tabId, enumerateGoldboxCandidates).catch(() => []);
     if (!Array.isArray(initial) || !initial.length) initial = await execute(tabId, enumerateRenewedGoldboxCandidates).catch(() => []);
-    if (!initial.length) await sleep(2500);
+    if (!initial.length && attempt < 3) {
+      await chrome.tabs.reload(tabId, { bypassCache: true }).catch(() => undefined);
+      await waitForUrl(tabId, /#affiliate\/ws\/best\/goldbox/, 20000).catch(() => undefined);
+      await sleep(4000);
+    }
   }
   if (!Array.isArray(initial) || !initial.length) throw new Error('골드박스 후보를 찾지 못했습니다. 리뉴얼 골드박스 로딩을 완료하지 못했습니다.');
   const results = [];

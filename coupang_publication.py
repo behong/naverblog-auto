@@ -100,7 +100,12 @@ def request_coupang_publication_approval(payload: dict[str, Any], ttl_minutes: i
     """
     candidate = candidate_from_payload(payload)
     if duplicate_coupang_product(candidate.product_id):
-        raise ValueError("이미 발행 중이거나 발행된 쿠팡 상품은 다시 승인할 수 없습니다.")
+        return {
+            "skipped": True,
+            "reason": "이미 발행 중이거나 발행된 쿠팡 상품은 다시 승인할 수 없습니다.",
+            "product_id": candidate.product_id,
+            "product_name": candidate.product_name,
+        }
     summary = [{
         "product_id": candidate.product_id,
         "product_name": candidate.product_name,

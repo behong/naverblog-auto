@@ -297,6 +297,10 @@ async function requestAutoApproval(detail, affiliateUrl, deviceToken) {
   };
   const response = await fetch(`${BLOGAUTO_ORIGIN}/api/coupang/collector/approval`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Naver-Draft-Device': deviceToken }, body: JSON.stringify({ candidate, ttl_minutes: 30 }), cache: 'no-store' });
   const body = await response.json().catch(() => ({}));
+  const result = body?.result || {};
+  if (response.ok && body?.ok && result.skipped) {
+    return { ok: false, skipped: true, error: result.reason || '이미 발행된 상품이라 건너뛰었습니다.' };
+  }
   return response.ok && body?.ok ? { ok: true } : { ok: false, error: body?.error || '텔레그램 승인 요청을 만들지 못했습니다.' };
 }
 
@@ -334,8 +338,9 @@ async function runScheduledGoldbox(limit = 4) {
       const approval = await requestAutoApproval(detail, item.generated_urls[0], String(deviceToken));
       outcomes.push({ product_id: item.product_id, approval });
       const imageDiagnostics = approval.image_diagnostics || null;
-      const diagnosticMessage = approval.ok ? '' : `${approval.error}${imageDiagnostics ? ` [image=${JSON.stringify(imageDiagnostics).slice(0, 1200)}]` : ''}`;
-      await recordScheduledDiagnostic({ run_id: runId, status: approval.ok ? 'AWAITING_APPROVAL' : 'FAILED', step: approval.ok ? '텔레그램 승인 요청 생성' : '텔레그램 승인 요청 실패', product_id: item.product_id, product_name: detail.product_name, error_message: diagnosticMessage, context: { approval, image_diagnostics: imageDiagnostics } }, deviceToken);
+      const diagnosticMessage = approval.ok || approval.skipped ? '' : `${approval.error}${imageDiagnostics ? ` [image=${JSON.stringify(imageDiagnostics).slice(0, 1200)}]` : ''}`;
+      const skippedDuplicate = Boolean(approval.skipped);
+      await recordScheduledDiagnostic({ run_id: runId, status: approval.ok ? 'AWAITING_APPROVAL' : skippedDuplicate ? 'SKIPPED' : 'FAILED', step: approval.ok ? '텔레그램 승인 요청 생성' : skippedDuplicate ? '이미 발행된 상품 건너뜀' : '텔레그램 승인 요청 실패', product_id: item.product_id, product_name: detail.product_name, error_message: diagnosticMessage, context: { approval, image_diagnostics: imageDiagnostics } }, deviceToken);
     }
     await recordScheduledDiagnostic({ run_id: runId, status: 'AWAITING_APPROVAL', step: '예약 워커 완료·승인 대기', context: { outcomes } }, deviceToken);
     return { ok: true, summary, outcomes };

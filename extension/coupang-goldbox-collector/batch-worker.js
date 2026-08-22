@@ -279,8 +279,8 @@ function installAutoAlarms() {
 
 async function scheduleOneTimeSmokeTest() {
   const state = await chrome.storage.local.get('coupangAutoSmokeTestVersion');
-  if (state.coupangAutoSmokeTestVersion === '0.2.2') return;
-  await chrome.storage.local.set({ coupangAutoSmokeTestVersion: '0.2.2' });
+  if (state.coupangAutoSmokeTestVersion === '0.2.3') return;
+  await chrome.storage.local.set({ coupangAutoSmokeTestVersion: '0.2.3' });
   chrome.alarms.create('coupang-goldbox-test', { when: Date.now() + 60 * 1000 });
 }
 

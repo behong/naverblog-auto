@@ -253,8 +253,13 @@ async function runScheduledGoldbox(limit = 4) {
   if (scheduledRunActive) return { ok: false, error: '이미 자동 수집이 실행 중입니다.' };
   scheduledRunActive = true;
   try {
-    const { coupangCollectorDeviceToken: deviceToken } = await chrome.storage.local.get('coupangCollectorDeviceToken');
-    if (String(deviceToken || '').length < 24) throw new Error('쿠팡 수집기 연결 정보가 없습니다. 관리자 페이지에서 한 번 연결해 주세요.');
+    const localState = await chrome.storage.local.get('coupangCollectorDeviceToken');
+    const syncState = await chrome.storage.sync.get('coupangCollectorDeviceToken');
+    const deviceToken = String(localState.coupangCollectorDeviceToken || syncState.coupangCollectorDeviceToken || '').trim();
+    if (deviceToken.length >= 24 && localState.coupangCollectorDeviceToken !== deviceToken) {
+      await chrome.storage.local.set({ coupangCollectorDeviceToken: deviceToken });
+    }
+    if (deviceToken.length < 24) throw new Error('쿠팡 수집기 연결 정보가 없습니다. 최초 1회만 관리자 페이지에서 연결해 주세요.');
     const tabId = await ensureGoldboxTab();
     const summary = await runBatch(tabId, { save: false });
     const stored = await chrome.storage.local.get('coupangGoldboxPartnerLinkResults');
@@ -306,6 +311,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const token = String(message.deviceToken || '').trim();
         if (origin !== 'https://blogauto.hongzi.us' || token.length < 24) throw new Error('쿠팡 수집기 연결 요청이 올바르지 않습니다.');
         await chrome.storage.local.set({ coupangCollectorDeviceToken: token, coupangCollectorPairTabId: sender.tab?.id || null });
+        await chrome.storage.sync.set({ coupangCollectorDeviceToken: token });
         sendResponse({ ok: true });
       } catch (error) {
         sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) });

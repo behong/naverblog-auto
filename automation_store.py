@@ -1379,7 +1379,7 @@ def upsert_run(payload: dict[str, Any]) -> dict[str, Any]:
     write_audit_csv("run", {**values, "run_id": str(parsed_id)})
     if status in ALERT_STATUSES:
         action = str(context.get("required_action") or "로그인·가격·이미지·편집기 상태를 확인한 뒤 다시 실행하세요.")
-        notify_telegram(
+        notify_telegram_approval(
             f"🚨 블로그 자동화 오류\n[{platform.upper()}] {status}\n"
             f"단계: {values['step'] or '-'}\n상품: {values['product_name'] or '-'}\n"
             f"오류: {values['error_message'] or values['error_code'] or '-'}\n"
@@ -1440,7 +1440,7 @@ def upsert_post(payload: dict[str, Any]) -> dict[str, Any]:
         row = conn.execute(sql, values).fetchone()
     write_audit_csv("post", values)
     if status == "PUBLISHED":
-        notify_telegram(
+        notify_telegram_approval(
             f"✅ 블로그 발행 완료\n[{platform.upper()}] {product_name}\n"
             f"{values['naver_post_url'] or '(URL 미기록)'}"
         )

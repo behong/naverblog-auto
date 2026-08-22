@@ -76,8 +76,9 @@ def send_publication_approval(
     batch = create_publication_approval_batch(summary, expires_at, source)
     batch_id = str(batch["id"])
     preflight_only = str(source or "") == "toss-preflight"
+    source_label = "COUPANG" if "coupang" in str(source or "").lower() else "TOSS"
     lines = [
-        "🧪 네이버 입력 사전 검증 승인 요청" if preflight_only else "📝 블로그 발행 승인 요청",
+        ("🧪" if preflight_only else "📝") + f" [{source_label}] 블로그 발행 승인 요청",
         f"준비된 글: {int(batch['item_count'])}건",
         "",
         *[_brief_item(item, index) for index, item in enumerate(summary, start=1)],

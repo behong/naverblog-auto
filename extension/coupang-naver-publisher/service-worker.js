@@ -1684,10 +1684,14 @@ async function autoPublishApprovedNaver(tabId, draft, report) {
     await recordApprovalDispatchTrace({ step: 'publish-clicking', error: '', batchId: draft.approvalBatchId });
     const tabIdsBeforeClick = await snapshotNaverTabIds();
     await clickNaverFinalPublish(tabId);
-    const settingsClosed = await waitForNaverPublishState(tabId, (value) => !value.settingsOpen, 12, 500);
-    if (!settingsClosed) throw new Error('최종 발행 버튼 클릭 뒤 설정 창이 닫히지 않았습니다. 공개하지 않았습니다.');
+    // 네이버는 최종 발행 뒤 설정 패널 DOM을 잠시 유지하거나 beforeunload 확인창을 표시할 수 있다.
+    // 패널 닫힘 여부만으로 실패 처리하지 않고, 실제 공개 URL 확인을 최종 성공 기준으로 삼는다.
     publishAttempted = true;
     const naverPostUrl = await waitForPublishedNaverUrl(tabId, tabIdsBeforeClick);
+    if (!naverPostUrl) {
+      const afterClickState = await getNaverPublishPageState(tabId).catch(() => null);
+      await recordAutoFillTrace({ publishStage: 'post-click-check', publishPageState: afterClickState });
+    }
     if (!naverPostUrl) throw new Error('발행 버튼 클릭 뒤 공개 URL을 확인하지 못했습니다.');
     await extensionPublishRequest('/api/coupang/extension/publish/result', { batch_id: draft.approvalBatchId, publish_token: publishToken, outcome: 'PUBLISHED', naver_post_url: naverPostUrl });
     await chrome.storage.local.set({ [LAST_COUPANG_PUBLISH_AT_KEY]: Date.now() });

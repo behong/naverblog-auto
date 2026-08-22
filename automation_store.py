@@ -1134,6 +1134,8 @@ def create_publication_approval_batch(
     summary: list[dict[str, Any]],
     expires_at: datetime,
     source: str = "toss-daily",
+    *,
+    auto_approve: bool = False,
 ) -> dict[str, Any]:
     approval_chat_id = active_telegram_approval_chat_id()
     if not approval_chat_id:
@@ -1145,12 +1147,14 @@ def create_publication_approval_batch(
     if expires_at.tzinfo is None:
         raise ValueError("approval expiry must include a timezone")
     batch_id = uuid.uuid4()
+    initial_status = 'APPROVED' if auto_approve else 'PENDING'
+    decided_at_sql = ', now()' if auto_approve else ', NULL'
     with _connect() as conn:
         row = conn.execute(
-            """
+            f"""
             INSERT INTO publication_approval_batches
-                (id, status, source, item_count, summary, expected_chat_id, expires_at)
-            VALUES (%s, 'PENDING', %s, %s, %s::jsonb, %s, %s)
+                (id, status, source, item_count, summary, expected_chat_id, expires_at, decided_at)
+            VALUES (%s, '{initial_status}', %s, %s, %s::jsonb, %s, %s{decided_at_sql})
             RETURNING id, status, source, item_count, summary, created_at, expires_at
             """,
             (

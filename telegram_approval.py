@@ -28,6 +28,7 @@ from automation_store import (
 APPROVAL_TTL_MINUTES = min(
     max(int(os.getenv("TELEGRAM_APPROVAL_TTL_MINUTES", "30")), 5), 120
 )
+AUTO_APPROVE_PUBLICATIONS = os.getenv("AUTO_APPROVE_PUBLICATIONS", "1").strip().lower() not in {"0", "false", "no", "off"}
 POLL_TIMEOUT_SECONDS = 25
 
 
@@ -73,8 +74,10 @@ def send_publication_approval(
     """Create an approval batch and send one Telegram inline keyboard."""
     ttl = APPROVAL_TTL_MINUTES if ttl_minutes is None else min(max(int(ttl_minutes), 5), 120)
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl)
-    batch = create_publication_approval_batch(summary, expires_at, source)
+    batch = create_publication_approval_batch(summary, expires_at, source, auto_approve=AUTO_APPROVE_PUBLICATIONS)
     batch_id = str(batch["id"])
+    if AUTO_APPROVE_PUBLICATIONS:
+        return {**batch, "auto_approved": True, "telegram_message_id": 0, "expected_chat_id": active_telegram_approval_chat_id()}
     preflight_only = str(source or "") == "toss-preflight"
     source_label = "COUPANG" if "coupang" in str(source or "").lower() else "TOSS"
     lines = [

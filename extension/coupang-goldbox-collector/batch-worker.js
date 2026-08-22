@@ -227,11 +227,11 @@ async function ensureGoldboxTab() {
   const existing = tabs.find((tab) => Number.isInteger(tab.id));
   if (existing?.id) {
     await chrome.tabs.update(existing.id, { active: true, url: GOLDBOX_URL });
-    return existing.id;
+    return { id: existing.id, owned: false };
   }
   const created = await chrome.tabs.create({ url: GOLDBOX_URL, active: false });
   if (!created.id) throw new Error('골드박스 자동화 탭을 만들지 못했습니다.');
-  return created.id;
+  return { id: created.id, owned: true };
 }
 
 async function extractAutoDetail(tabId) {
@@ -313,6 +313,7 @@ async function runScheduledGoldbox(limit = 4) {
   if (scheduledRunActive) return { ok: false, error: '이미 자동 수집이 실행 중입니다.' };
   scheduledRunActive = true;
   let runId = '';
+  let goldboxTab = null;
   try {
     const localState = await chrome.storage.local.get('coupangCollectorDeviceToken');
     const syncState = await chrome.storage.sync.get('coupangCollectorDeviceToken');
@@ -322,7 +323,8 @@ async function runScheduledGoldbox(limit = 4) {
       await chrome.storage.local.set({ coupangCollectorDeviceToken: deviceToken });
     }
     if (deviceToken.length < 24) throw new Error('쿠팡 수집기 연결 정보가 없습니다. 최초 1회만 관리자 페이지에서 연결해 주세요.');
-    const tabId = await ensureGoldboxTab();
+    goldboxTab = await ensureGoldboxTab();
+    const tabId = goldboxTab.id;
     runId = crypto.randomUUID();
     await recordScheduledDiagnostic({ run_id: runId, status: 'STARTED', step: '예약 워커 시작', context: { limit } }, deviceToken);
     console.info('[Coupang] scheduled run starting on tab', tabId);
@@ -363,7 +365,12 @@ async function runScheduledGoldbox(limit = 4) {
     const token = String(state.coupangCollectorDeviceToken || syncState.coupangCollectorDeviceToken || '').trim();
     if (token.length >= 24) await recordScheduledDiagnostic({ run_id: runId || undefined, status: 'FAILED', step: '예약 워커 예외 종료', error_message: error?.message || String(error) }, token);
     throw error;
-  } finally { scheduledRunActive = false; }
+  } finally {
+    if (typeof goldboxTab !== 'undefined' && goldboxTab?.owned && Number.isInteger(goldboxTab.id)) {
+      await chrome.tabs.remove(goldboxTab.id).catch(() => undefined);
+    }
+    scheduledRunActive = false;
+  }
 }
 
 function installAutoAlarms() {

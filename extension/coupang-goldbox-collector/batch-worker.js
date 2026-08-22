@@ -237,7 +237,7 @@ async function extractAutoDetail(tabId) {
     const id = location.pathname.match(/\/vp\/products\/(\d+)/)?.[1] || '';
     const prices = [...text.matchAll(/(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)\s*원/g)].map((m) => Number(m[1].replace(/,/g, ''))).filter((v) => v > 0);
     const uniquePrices = [...new Set(prices)];
-    const imageUrls = [...document.querySelectorAll('.prod-image-container img, .prod-image img, img[class*="prod-image"], img[class*="product-image"], meta[property="og:image"]')].map((node) => node.getAttribute?.('content') || node.currentSrc || node.src || node.getAttribute?.('data-src') || '').filter((url, i, all) => /^https:\/\/.*coupangcdn\.com\//i.test(url) && !url.includes('/thumbnails/remote/') && !/(\/common\/|logo|sprite|icon)/i.test(url) && all.indexOf(url) === i);
+    const imageUrls = [...document.querySelectorAll('.prod-image-container img, .prod-image img, img[class*="prod-image"], img[class*="product-image"], meta[property="og:image"]')].map((node) => node.getAttribute?.('content') || node.currentSrc || node.src || node.getAttribute?.('data-src') || '').filter((url, i, all) => /^https:\/\/.*coupangcdn\.com\//i.test(url) && !/(\/common\/|logo|sprite|icon)/i.test(url) && all.indexOf(url) === i);
     const composition = clean((text.match(/(?:개당 중량\s*×\s*수량|중량\s*×\s*수량):\s*([^\n]{1,80})/i) || [])[1] || (title.match(/\d+(?:\.\d+)?\s*(?:kg|g|L|ml|개|입|팩|세트)/i) || [])[0] || '');
     const condition = /와우/.test(text) ? '와우회원 혜택 적용 시' : (/쿠폰/.test(text) ? '쿠폰 적용 시' : '');
     return { product_id: id, product_name: title, composition, product_page_url: location.href, normal_price: uniquePrices[0] || 0, sale_price: uniquePrices[1] || uniquePrices[0] || 0, conditional_price: uniquePrices[2] || uniquePrices[1] || uniquePrices[0] || 0, price_condition: condition, source_image_url: imageUrls[0] || '', source_image_urls: imageUrls.slice(0, 4), features: [], audiences: [], source_image_verified: false };
@@ -328,7 +328,9 @@ async function runScheduledGoldbox(limit = 4) {
       const detail = await extractAutoDetail(tabId);
       const approval = await requestAutoApproval(detail, item.generated_urls[0], String(deviceToken));
       outcomes.push({ product_id: item.product_id, approval });
-      await recordScheduledDiagnostic({ run_id: runId, status: approval.ok ? 'AWAITING_APPROVAL' : 'FAILED', step: approval.ok ? '텔레그램 승인 요청 생성' : '텔레그램 승인 요청 실패', product_id: item.product_id, product_name: detail.product_name, error_message: approval.ok ? '' : approval.error, context: { approval, image_diagnostics: approval.image_diagnostics || null } }, deviceToken);
+      const imageDiagnostics = approval.image_diagnostics || null;
+      const diagnosticMessage = approval.ok ? '' : `${approval.error}${imageDiagnostics ? ` [image=${JSON.stringify(imageDiagnostics).slice(0, 1200)}]` : ''}`;
+      await recordScheduledDiagnostic({ run_id: runId, status: approval.ok ? 'AWAITING_APPROVAL' : 'FAILED', step: approval.ok ? '텔레그램 승인 요청 생성' : '텔레그램 승인 요청 실패', product_id: item.product_id, product_name: detail.product_name, error_message: diagnosticMessage, context: { approval, image_diagnostics: imageDiagnostics } }, deviceToken);
     }
     await recordScheduledDiagnostic({ run_id: runId, status: 'AWAITING_APPROVAL', step: '예약 워커 완료·승인 대기', context: { outcomes } }, deviceToken);
     return { ok: true, summary, outcomes };

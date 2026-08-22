@@ -14,7 +14,7 @@ from automation.coupang_pipeline import (
     build_coupang_approval_draft,
     validate_coupang_candidate,
 )
-from automation_store import _connect, notify_telegram_approval
+from automation_store import _connect, enforce_cross_platform_publish_gap, notify_telegram_approval
 from telegram_approval import send_publication_approval
 
 
@@ -233,6 +233,7 @@ def begin_coupang_extension_publish(batch_id: str, product: dict[str, Any]) -> d
     parsed_id = uuid.UUID(str(batch_id))
     values = _publish_values(product)
     with _connect() as conn:
+        enforce_cross_platform_publish_gap(conn, 'coupang')
         row = conn.execute(
             """
             SELECT id, status, source, summary, extension_claimed_at, publish_state

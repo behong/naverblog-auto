@@ -521,6 +521,43 @@ def mark_publication_approval_claimed(batch_id: str) -> bool:
     return bool(row)
 
 
+MIN_CROSS_PLATFORM_PUBLISH_GAP_MINUTES = 60
+
+
+def enforce_cross_platform_publish_gap(conn, platform: str) -> None:
+    """Prevent Toss and Coupang from starting Naver publication too close together."""
+    normalized = str(platform or '').strip().lower()
+    if normalized not in {'toss', 'coupang'}:
+        return
+    row = conn.execute(
+        """
+        SELECT publish_started_at, source
+        FROM publication_approval_batches
+        WHERE publish_started_at IS NOT NULL
+          AND source IN ('coupang-publish', 'toss-daily', 'toss-scheduled-release',
+                         'toss-draft-window:morning', 'toss-draft-window:midday',
+                         'toss-draft-window:evening')
+        ORDER BY publish_started_at DESC
+        LIMIT 1
+        FOR UPDATE
+        """
+    ).fetchone()
+    if not row or not row.get('publish_started_at'):
+        return
+    previous_source = str(row.get('source') or '')
+    previous_platform = 'coupang' if previous_source == 'coupang-publish' else 'toss'
+    if previous_platform == normalized:
+        return
+    previous = row['publish_started_at']
+    current = datetime.now(timezone.utc)
+    if previous.tzinfo is None:
+        previous = previous.replace(tzinfo=timezone.utc)
+    elapsed_minutes = (current - previous).total_seconds() / 60
+    if elapsed_minutes < MIN_CROSS_PLATFORM_PUBLISH_GAP_MINUTES:
+        remaining = max(1, int(MIN_CROSS_PLATFORM_PUBLISH_GAP_MINUTES - elapsed_minutes + 0.999))
+        raise ValueError(f'토스·쿠팡 발행 간격을 위해 {remaining}분 후 다시 실행합니다.')
+
+
 def release_latest_extension_claim_for_retry() -> bool:
     with _connect() as conn:
         row = conn.execute(
@@ -751,6 +788,7 @@ def begin_extension_publish(batch_id: str, product: dict[str, Any]) -> dict[str,
     parsed_id = uuid.UUID(str(batch_id))
     values = _publish_product_values(product)
     with _connect() as conn:
+        enforce_cross_platform_publish_gap(conn, values['platform'])
         batch_row = conn.execute(
             """
             SELECT id, status, summary, extension_claimed_at, publish_state

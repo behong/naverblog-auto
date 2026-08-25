@@ -5,6 +5,7 @@ import hmac
 import json
 import secrets
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -14,8 +15,13 @@ from automation.coupang_pipeline import (
     build_coupang_approval_draft,
     validate_coupang_candidate,
 )
-from automation_store import _connect, enforce_cross_platform_publish_gap, notify_telegram_approval
-from telegram_approval import send_publication_approval
+from automation_store import (
+    _connect,
+    auto_approve_publication_batch,
+    create_publication_approval_batch,
+    enforce_cross_platform_publish_gap,
+    notify_telegram_approval,
+)
 
 
 COUPANG_APPROVAL_SOURCE = "coupang-publish"
@@ -91,12 +97,11 @@ def candidate_payload(candidate: CoupangCandidate) -> dict[str, Any]:
 
 
 def request_coupang_publication_approval(payload: dict[str, Any], ttl_minutes: int = 30) -> dict[str, Any]:
-    """Validate one fully reviewed product and send one Telegram approval request.
+    """Validate one candidate and enqueue it for approval-free automatic publication.
 
-    This function never opens Naver or clicks a publish control.  It persists the
-    complete validated candidate only inside the approval batch, keyed by the
-    published product id, so the eventual publisher can reconstruct exactly the
-    content the user approved.
+    The existing validation gates still run before the batch is auto-approved. The
+    publisher extension then uses the same single-use claim and result verification
+    path, while Telegram receives start/success/failure notifications only.
     """
     candidate = candidate_from_payload(payload)
     if duplicate_coupang_product(candidate.product_id):
@@ -118,7 +123,10 @@ def request_coupang_publication_approval(payload: dict[str, Any], ttl_minutes: i
         "source_image_verified": True,
         "candidate": candidate_payload(candidate),
     }]
-    return send_publication_approval(summary, source=COUPANG_APPROVAL_SOURCE, ttl_minutes=ttl_minutes)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=max(5, min(int(ttl_minutes or 30), 180)))
+    batch = create_publication_approval_batch(summary, expires_at, source=COUPANG_APPROVAL_SOURCE)
+    approved = auto_approve_publication_batch(str(batch["id"]))
+    return {"auto_published": True, "batch_id": str(approved["id"]), "status": approved["status"], "source": COUPANG_APPROVAL_SOURCE}
 
 
 def duplicate_coupang_product(product_id: str) -> bool:

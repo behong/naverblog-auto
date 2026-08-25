@@ -1199,6 +1199,24 @@ def create_auto_publication_batch(
     return dict(row or {})
 
 
+def auto_approve_publication_batch(batch_id: str) -> dict[str, Any]:
+    """Approve a fully validated batch without requiring a Telegram button click."""
+    parsed_id = uuid.UUID(str(batch_id))
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            UPDATE publication_approval_batches
+            SET status = 'APPROVED', decided_at = now()
+            WHERE id = %s AND status = 'PENDING' AND expires_at > now()
+            RETURNING id, status, source, item_count, summary, created_at, expires_at, decided_at
+            """,
+            (parsed_id,),
+        ).fetchone()
+    if not row:
+        raise ValueError("자동 발행 승인 배치를 만들지 못했습니다.")
+    return dict(row)
+
+
 def set_publication_approval_expected_chat_id(batch_id: str, chat_id: str) -> None:
     parsed_id = uuid.UUID(str(batch_id))
     normalized_chat_id = str(chat_id or "").strip()

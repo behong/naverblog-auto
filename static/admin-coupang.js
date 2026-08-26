@@ -9,6 +9,13 @@
   const connectionStatus = document.querySelector('#connectionStatus');
   const logout = document.querySelector('#logout');
   const diagnostics = document.querySelector('#diagnostics');
+  const overviewRuns = document.querySelector('#overviewRuns');
+  const overviewNext = document.querySelector('#overviewNext');
+  const overviewQueue = document.querySelector('#overviewQueue');
+  const overviewMode = document.querySelector('#overviewMode');
+  const overviewSuccess = document.querySelector('#overviewSuccess');
+  const overviewError = document.querySelector('#overviewError');
+  const overviewUpdated = document.querySelector('#overviewUpdated');
 
   let csrfToken = '';
 
@@ -28,6 +35,33 @@
     loginPanel.style.display = 'none';
     dashboard.hidden = false;
     dashboard.style.display = 'block';
+  };
+
+  const formatTime = (value) => {
+    if (!value) return '없음';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'short' });
+  };
+
+  const loadOverview = async () => {
+    if (!overviewRuns) return;
+    try {
+      const data = await api('/api/admin/coupang/overview');
+      const runs = Array.isArray(data.today_runs) ? data.today_runs : [];
+      const queue = data.queue || {};
+      overviewRuns.textContent = `${runs.length}건`;
+      overviewNext.textContent = formatTime(data.next_schedule);
+      overviewQueue.textContent = `${Number(queue.NOT_STARTED || 0) + Number(queue.PUBLISHING || 0)}건`;
+      overviewMode.textContent = data.auto_publish ? '자동 공개' : '승인 대기';
+      const success = data.recent_success;
+      overviewSuccess.textContent = success?.naver_post_url ? `${success.product_name || '최근 발행 글'} · 공개 글 열기` : '없음';
+      overviewSuccess.href = success?.naver_post_url || '#';
+      overviewSuccess.target = success?.naver_post_url ? '_blank' : '';
+      overviewError.textContent = data.recent_error ? `${data.recent_error.product_name || '상품'} · ${data.recent_error.error_message || data.recent_error.step || '오류'}` : '없음';
+      overviewUpdated.textContent = `마지막 갱신: ${formatTime(new Date().toISOString())}`;
+    } catch (error) {
+      overviewUpdated.textContent = `운영 현황을 불러오지 못했습니다: ${error.message || error}`;
+    }
   };
 
   const loadDiagnostics = async () => {
@@ -157,8 +191,9 @@
       password.value = '';
       enterDashboard();
       setStatus(connectionStatus, '쿠팡 수집기와 쿠팡 발행 확장을 각각 한 번 연결하면 됩니다.');
+      loadOverview();
       loadDiagnostics();
-      setInterval(loadDiagnostics, 15000);
+      setInterval(() => { loadOverview(); loadDiagnostics(); }, 15000);
     } catch (error) {
       password.value = '';
       setStatus(loginStatus, error.message === 'too_many_attempts' ? '로그인 시도가 잠시 제한됐습니다. 나중에 다시 시도해 주세요.' : '비밀번호를 확인해 주세요.', 'error');
@@ -186,8 +221,9 @@
       if (!csrfToken) throw new Error('세션 정보가 없습니다.');
       enterDashboard();
       setStatus(connectionStatus, '쿠팡 수집기와 쿠팡 발행 확장을 각각 한 번 연결하면 됩니다.');
+      loadOverview();
       loadDiagnostics();
-      setInterval(loadDiagnostics, 15000);
+      setInterval(() => { loadOverview(); loadDiagnostics(); }, 15000);
     } catch (_) {
       leaveDashboard();
     }

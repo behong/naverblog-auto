@@ -47,6 +47,7 @@ from automation_store import (
     create_extension_device,
     extension_device_valid,
     health as automation_health,
+    coupang_admin_overview,
     init_schema as init_automation_schema,
     recent_runs,
     recent_toss_products,
@@ -664,6 +665,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 if parsed.path == "/api/admin/coupang/diagnostics":
                     runs = [item for item in recent_runs(int(query.get("limit", ["40"])[0])) if item.get("platform") == "coupang"]
                     self._send_admin_json({"ok": True, "result": runs})
+                    return
+                if parsed.path == "/api/admin/coupang/overview":
+                    self._send_admin_json({"ok": True, "result": coupang_admin_overview()})
                     return
                 if parsed.path == "/api/admin/settings":
                     publisher = admin_toss_publisher_settings()

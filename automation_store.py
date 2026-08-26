@@ -1592,6 +1592,70 @@ def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def coupang_admin_overview() -> dict[str, Any]:
+    """Return the compact operating snapshot used by the Coupang admin dashboard."""
+    now = datetime.now(KOREA_TIMEZONE)
+    today = now.date()
+    schedule_hours = (7, 12, 18)
+    next_run = None
+    for hour in schedule_hours:
+        candidate = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if candidate > now:
+            next_run = candidate
+            break
+    if next_run is None:
+        from datetime import timedelta
+        next_run = (now + timedelta(days=1)).replace(hour=7, minute=0, second=0, microsecond=0)
+    with _connect() as conn:
+        run_rows = conn.execute(
+            """
+            SELECT id, job_name, platform, status, step, product_id, product_name,
+                   error_code, error_message, retry_count, started_at, finished_at, updated_at
+            FROM automation_runs
+            WHERE platform = 'coupang' AND (updated_at AT TIME ZONE 'Asia/Seoul')::date = %s
+            ORDER BY updated_at DESC LIMIT 50
+            """,
+            (today,),
+        ).fetchall()
+        success = conn.execute(
+            """
+            SELECT product_name, product_id, naver_post_url, published_at
+            FROM blog_posts
+            WHERE platform = 'coupang' AND status = 'PUBLISHED' AND naver_post_url IS NOT NULL
+            ORDER BY published_at DESC NULLS LAST LIMIT 1
+            """
+        ).fetchone()
+        error = conn.execute(
+            """
+            SELECT product_name, step, error_message, updated_at
+            FROM automation_runs
+            WHERE platform = 'coupang' AND status IN ('FAILED', 'ERROR')
+            ORDER BY updated_at DESC LIMIT 1
+            """
+        ).fetchone()
+        queue_rows = conn.execute(
+            """
+            SELECT publish_state, COUNT(*) AS count
+            FROM publication_approval_batches
+            WHERE source = 'coupang-publish'
+              AND publish_state IN ('NOT_STARTED', 'PUBLISHING')
+            GROUP BY publish_state
+            """
+        ).fetchall()
+    queue = {"NOT_STARTED": 0, "PUBLISHING": 0}
+    for row in queue_rows:
+        queue[str(row["publish_state"])] = int(row["count"])
+    return {
+        "today": today.isoformat(),
+        "today_runs": [dict(row) for row in run_rows],
+        "next_schedule": next_run.isoformat(),
+        "recent_success": dict(success) if success else None,
+        "recent_error": dict(error) if error else None,
+        "queue": queue,
+        "auto_publish": True,
+    }
+
+
 _recent_approval_notifications: dict[str, float] = {}
 _APPROVAL_NOTIFICATION_DEDUPE_SECONDS = 300
 

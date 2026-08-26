@@ -6,7 +6,16 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="referrer" content="no-referrer">
   <title>관리자 · 쿠팡 골드박스</title>
-  <link rel="stylesheet" href="/internal-toss.css?v=coupang-admin-v1">
+  <link rel="stylesheet" href="/internal-toss.css?v=coupang-admin-v2">
+  <style>
+    .overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+    .overview-grid > div { padding: 14px; border: 1px solid rgba(127,127,127,.22); border-radius: 12px; background: rgba(127,127,127,.06); }
+    .overview-grid span, .overview-grid strong { display: block; }
+    .overview-grid strong { margin-top: 6px; font-size: 1.1rem; }
+    .overview-details { display: grid; gap: 8px; }
+    .overview-details p { display: grid; grid-template-columns: 130px 1fr; gap: 10px; margin: 0; overflow-wrap: anywhere; }
+    @media (max-width: 700px) { .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .overview-details p { grid-template-columns: 1fr; gap: 4px; } }
+  </style>
 </head>
 <body>
   <main class="shell">
@@ -34,6 +43,24 @@
     </section>
 
     <section id="dashboard" hidden>
+      <section class="card controls" aria-labelledby="overview-title">
+        <div>
+          <p class="section-kicker">OPERATIONS OVERVIEW</p>
+          <h2 id="overview-title">쿠팡 자동화 운영 현황</h2>
+          <p class="muted">자동 공개 모드의 오늘 실행 내역과 다음 예약, 최근 결과를 한 곳에서 확인합니다. 화면은 15초마다 갱신됩니다.</p>
+        </div>
+        <div class="overview-grid" id="overviewGrid">
+          <div><span class="muted">오늘 실행</span><strong id="overviewRuns">확인 중</strong></div>
+          <div><span class="muted">다음 예약</span><strong id="overviewNext">확인 중</strong></div>
+          <div><span class="muted">현재 대기열</span><strong id="overviewQueue">확인 중</strong></div>
+          <div><span class="muted">자동 공개</span><strong id="overviewMode">확인 중</strong></div>
+        </div>
+        <div class="overview-details">
+          <p><span class="muted">최근 성공 URL</span><a id="overviewSuccess" href="#">없음</a></p>
+          <p><span class="muted">최근 오류</span><span id="overviewError">없음</span></p>
+        </div>
+        <p id="overviewUpdated" class="footnote">운영 현황을 불러오는 중입니다.</p>
+      </section>
       <section class="card controls" aria-labelledby="connection-title">
         <div>
           <p class="section-kicker">COUPANG EXTENSIONS</p>
@@ -84,6 +111,6 @@
       </section>
     </section>
   </main>
-  <script src="/admin-coupang.js?v=coupang-admin-v1"></script>
+  <script src="/admin-coupang.js?v=coupang-admin-v2"></script>
 </body>
 </html>

@@ -14,8 +14,16 @@
   const overviewQueue = document.querySelector('#overviewQueue');
   const overviewMode = document.querySelector('#overviewMode');
   const overviewSuccess = document.querySelector('#overviewSuccess');
-  const overviewError = document.querySelector('#overviewError');
   const overviewUpdated = document.querySelector('#overviewUpdated');
+  const overviewServiceNote = document.querySelector('#overviewServiceNote');
+  const overviewQueueNote = document.querySelector('#overviewQueueNote');
+  const overviewNextNote = document.querySelector('#overviewNextNote');
+  const overviewSuccessLabel = document.querySelector('#overviewSuccessLabel');
+  const overviewSuccessTime = document.querySelector('#overviewSuccessTime');
+  const overviewSchedule = document.querySelector('#overviewSchedule');
+  const overviewAttention = document.querySelector('#overviewAttention');
+  const overviewAttentionCount = document.querySelector('#overviewAttentionCount');
+  const refreshOverview = document.querySelector('#refreshOverview');
 
   let csrfToken = '';
 
@@ -49,16 +57,28 @@
       const data = await api('/api/admin/coupang/overview');
       const runs = Array.isArray(data.today_runs) ? data.today_runs : [];
       const queue = data.queue || {};
-      overviewRuns.textContent = `${runs.length}건`;
+      const attention = runs.filter((row) => ['FAILED', 'ERROR'].includes(String(row.status || '').toUpperCase())).slice(0, 5);
+      overviewRuns.textContent = `${runs.length}건 실행`;
       overviewNext.textContent = formatTime(data.next_schedule);
-      overviewQueue.textContent = `${Number(queue.NOT_STARTED || 0) + Number(queue.PUBLISHING || 0)}건`;
-      overviewMode.textContent = data.auto_publish ? '자동 공개' : '승인 대기';
+      overviewQueue.textContent = `${Number(queue.NOT_STARTED || 0) + Number(queue.PUBLISHING || 0)}건 대기`;
+      overviewMode.textContent = data.auto_publish ? '자동 공개 설정' : '승인 대기';
+      overviewServiceNote.textContent = data.auto_publish ? '검증 통과 항목을 승인 없이 순차 발행합니다.' : '검증 통과 항목을 승인 후 발행합니다.';
+      overviewQueueNote.textContent = `대기 ${Number(queue.NOT_STARTED || 0)} · 발행 중 ${Number(queue.PUBLISHING || 0)} · 확인 필요 ${attention.length}`;
+      overviewNextNote.textContent = `다음 골드박스 수집 예정 · ${formatTime(data.next_schedule)}`;
       const success = data.recent_success;
-      overviewSuccess.textContent = success?.naver_post_url ? `${success.product_name || '최근 발행 글'} · 공개 글 열기` : '없음';
+      overviewSuccessLabel.textContent = success ? '공개 완료' : '공개 대기';
+      overviewSuccessTime.textContent = success ? `${success.product_name || '최근 상품'} · ${formatTime(success.published_at)}` : '최근 성공 URL 없음';
+      overviewSuccess.textContent = success?.naver_post_url ? '최근 공개 글 열기' : '';
       overviewSuccess.href = success?.naver_post_url || '#';
-      overviewSuccess.target = success?.naver_post_url ? '_blank' : '';
-      overviewError.textContent = data.recent_error ? `${data.recent_error.product_name || '상품'} · ${data.recent_error.error_message || data.recent_error.step || '오류'}` : '없음';
-      overviewUpdated.textContent = `마지막 갱신: ${formatTime(new Date().toISOString())}`;
+      overviewSuccess.hidden = !success?.naver_post_url;
+      overviewAttentionCount.textContent = `${attention.length}건`;
+      overviewSchedule.innerHTML = [
+        ['07:00 오전 골드박스', '예정 4건', data.today ? '오늘 일정' : '일정'],
+        ['12:00 정오 골드박스', '예정 2건', '일정'],
+        ['18:00 저녁 골드박스', '예정 4건', '일정'],
+      ].map(([title, detail, status], index) => `<div class="schedule-row"><div><strong>${title}</strong><small>${detail}</small></div><span class="status-pill ${index === 0 && runs.length ? 'done' : ''}">${index === 0 && runs.length ? '준비 완료' : status}</span></div>`).join('');
+      overviewAttention.innerHTML = attention.length ? attention.map((row) => `<div class="attention-row"><div><strong>${row.product_name || '상품 정보 없음'}</strong><small>${row.step || '자동 발행'} · ${row.error_message || row.error_code || '오류가 기록되었습니다.'}</small></div><time>${formatTime(row.updated_at)}</time></div>`).join('') : '<div class="schedule-row"><div><strong>확인 필요한 항목이 없습니다.</strong><small>오늘 자동 실행이 정상적으로 진행 중입니다.</small></div><span class="status-pill done">정상</span></div>';
+      overviewUpdated.textContent = `${data.today} 기준 · 마지막 조회 ${formatTime(new Date().toISOString())}`;
     } catch (error) {
       overviewUpdated.textContent = `운영 현황을 불러오지 못했습니다: ${error.message || error}`;
     }
@@ -170,6 +190,8 @@
       setBusy(false);
     }
   });
+
+  refreshOverview?.addEventListener('click', () => loadOverview());
 
   loginForm.addEventListener('submit', async (event) => {
     event.preventDefault();

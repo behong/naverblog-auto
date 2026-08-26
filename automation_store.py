@@ -6,12 +6,13 @@ import hmac
 import json
 import secrets
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -470,6 +471,166 @@ def mobile_toss_status() -> dict[str, Any]:
             {"source": str(row["source"]), "status": str(row["status"]), "item_count": int(row["item_count"])}
             for row in window_rows
         ],
+    }
+
+
+def _operations_safe_text(value: Any, limit: int = 240) -> str:
+    """Return a concise dashboard string without credentials or raw URLs."""
+    text = " ".join(str(value or "").split())
+    text = re.sub(
+        r"(?i)\b(token|secret|password|cookie|authorization|api[ _-]?key)\b\s*[:=]\s*[^\s,;]+",
+        r"\1=[숨김]",
+        text,
+    )
+    text = re.sub(r"https?://[^\s,;]+", "[링크 숨김]", text)
+    return text[:limit]
+
+
+def _operations_public_post_url(value: Any) -> str:
+    url = str(value or "").strip()
+    return url if re.fullmatch(r"https://blog\.naver\.com/[A-Za-z0-9._/-]+", url) else ""
+
+
+def toss_operations_summary() -> dict[str, Any]:
+    """Read-only, non-sensitive operational status for the Toss admin dashboard."""
+    today = korea_today()
+    now = datetime.now(ZoneInfo("Asia/Seoul"))
+    status = mobile_toss_status()
+    with _connect() as conn:
+        queue_rows = conn.execute(
+            """
+            SELECT q.sequence_no, q.product_id, q.product_name, q.expected_price, q.status,
+                   q.created_at, q.released_at, q.finished_at, q.error_message,
+                   COALESCE(p.naver_post_url, '') AS naver_post_url
+            FROM scheduled_toss_publish_items q
+            LEFT JOIN blog_posts p
+              ON p.platform = 'toss' AND p.product_id = q.product_id
+            WHERE q.schedule_date = %s
+            ORDER BY q.sequence_no
+            """,
+            (today,),
+        ).fetchall()
+        published_rows = conn.execute(
+            """
+            SELECT product_name, naver_post_url, published_at
+            FROM blog_posts
+            WHERE platform = 'toss'
+              AND status = 'PUBLISHED'
+              AND naver_post_url <> ''
+            ORDER BY published_at DESC NULLS LAST, updated_at DESC
+            LIMIT 5
+            """
+        ).fetchall()
+        run_rows = conn.execute(
+            """
+            SELECT product_name, status, step, error_message, retry_count, updated_at
+            FROM automation_runs
+            WHERE platform = 'toss'
+              AND (
+                status IN ('FAILED', 'PUBLISH_UNKNOWN', 'AUTH_REQUIRED', 'PRICE_MISMATCH', 'IMAGE_FAILED', 'EDITOR_FAILED')
+                OR error_message <> ''
+              )
+            ORDER BY updated_at DESC
+            LIMIT 12
+            """
+        ).fetchall()
+
+    queue = []
+    queue_errors = []
+    for row in queue_rows:
+        item = {
+            "sequence_no": int(row["sequence_no"]),
+            "product_name": _operations_safe_text(row["product_name"], 160),
+            "expected_price": int(row["expected_price"]) if row["expected_price"] is not None else None,
+            "status": str(row["status"]),
+            "created_at": row["created_at"],
+            "released_at": row["released_at"],
+            "finished_at": row["finished_at"],
+            "public_url": _operations_public_post_url(row["naver_post_url"]),
+        }
+        queue.append(item)
+        if str(row["status"]) in {"FAILED_PRE_SUBMIT", "PUBLISH_UNKNOWN"} or str(row["error_message"] or "").strip():
+            queue_errors.append(
+                {
+                    "product_name": item["product_name"],
+                    "status": str(row["status"]),
+                    "step": "예약 발행",
+                    "error_message": _operations_safe_text(row["error_message"]),
+                    "retry_count": 0,
+                    "occurred_at": row["finished_at"] or row["released_at"] or row["created_at"],
+                }
+            )
+
+    errors = queue_errors
+    seen_error_keys = {(item["product_name"], item["status"], str(item["occurred_at"] or "")) for item in errors}
+    for row in run_rows:
+        item = {
+            "product_name": _operations_safe_text(row["product_name"], 160) or "상품 정보 없음",
+            "status": str(row["status"]),
+            "step": _operations_safe_text(row["step"], 80) or "자동화",
+            "error_message": _operations_safe_text(row["error_message"]),
+            "retry_count": max(0, int(row["retry_count"] or 0)),
+            "occurred_at": row["updated_at"],
+        }
+        key = (item["product_name"], item["status"], str(item["occurred_at"] or ""))
+        if key not in seen_error_keys:
+            errors.append(item)
+            seen_error_keys.add(key)
+    errors.sort(key=lambda item: str(item["occurred_at"] or ""), reverse=True)
+
+    window_by_source = {str(item["source"]): item for item in status["windows"]}
+    plans = (
+        ("morning", "07:00", "오전 준비", 4),
+        ("midday", "12:00", "정오 준비", 2),
+        ("evening", "18:00", "저녁 준비", 4),
+    )
+    schedule = []
+    next_planned = None
+    for key, time_text, label, expected_count in plans:
+        hour, minute = (int(part) for part in time_text.split(":"))
+        planned_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        window = window_by_source.get(f"toss-draft-window:{key}", {})
+        schedule.append(
+            {
+                "key": key,
+                "label": label,
+                "time": time_text,
+                "expected_count": expected_count,
+                "status": str(window.get("status") or "예정"),
+                "item_count": int(window.get("item_count") or 0),
+                "planned_at": planned_at,
+            }
+        )
+        if next_planned is None and now < planned_at:
+            next_planned = {"label": label, "at": planned_at, "expected_count": expected_count}
+    if next_planned is None:
+        tomorrow = today + timedelta(days=1)
+        next_planned = {
+            "label": "다음 날 오전 준비",
+            "at": datetime(tomorrow.year, tomorrow.month, tomorrow.day, 7, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+            "expected_count": 4,
+        }
+
+    return {
+        "generated_at": now,
+        "date": today.isoformat(),
+        "release_paused": bool(status["release_paused"]),
+        "auto_publish_enabled": bool(status["auto_publish_enabled"]),
+        "queue_counts": status["queue"],
+        "schedule": schedule,
+        "next_planned": next_planned,
+        "release_interval_minutes": 20,
+        "queue": queue,
+        "recent_published": [
+            {
+                "product_name": _operations_safe_text(row["product_name"], 160),
+                "public_url": _operations_public_post_url(row["naver_post_url"]),
+                "published_at": row["published_at"],
+            }
+            for row in published_rows
+            if _operations_public_post_url(row["naver_post_url"])
+        ],
+        "recent_errors": errors[:5],
     }
 
 

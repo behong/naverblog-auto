@@ -6,7 +6,7 @@
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="referrer" content="no-referrer">
   <title>관리자 · 토스 수집 관리</title>
-  <link rel="stylesheet" href="/internal-toss.css?v=admin-link-v1">
+  <link rel="stylesheet" href="/internal-toss.css?v=operations-v1">
 </head>
 <body>
   <main class="shell">
@@ -36,6 +36,75 @@
     </section>
 
     <section id="dashboard" hidden>
+      <section class="card operations-card" aria-labelledby="operations-title">
+        <div class="table-heading">
+          <div>
+            <p class="section-kicker">TODAY OPERATIONS</p>
+            <h2 id="operations-title">오늘의 토스 발행 현황</h2>
+            <p id="operationsUpdated" class="muted">로그인 후 운영 현황을 불러옵니다.</p>
+          </div>
+          <button id="refreshOperations" type="button" class="secondary">현황 새로고침</button>
+        </div>
+        <div class="operations-grid" aria-live="polite">
+          <article class="operation-metric">
+            <span class="metric-label">서비스 상태</span>
+            <strong id="operationsService">확인 중</strong>
+            <span id="operationsServiceDetail" class="metric-detail">발행 설정을 확인합니다.</span>
+          </article>
+          <article class="operation-metric">
+            <span class="metric-label">오늘 대기열</span>
+            <strong id="operationsQueueCount">—</strong>
+            <span id="operationsQueueDetail" class="metric-detail">예약 항목을 확인합니다.</span>
+          </article>
+          <article class="operation-metric">
+            <span class="metric-label">다음 준비</span>
+            <strong id="operationsNext">—</strong>
+            <span id="operationsNextDetail" class="metric-detail">고정 일정을 확인합니다.</span>
+          </article>
+          <article class="operation-metric">
+            <span class="metric-label">최근 공개</span>
+            <strong id="operationsLatest">—</strong>
+            <span id="operationsLatestDetail" class="metric-detail">게시 URL을 확인합니다.</span>
+          </article>
+        </div>
+        <div class="operations-layout">
+          <section aria-labelledby="schedule-title">
+            <div class="table-heading compact-heading">
+              <h3 id="schedule-title">오늘의 준비 일정</h3>
+              <span class="count">07:00 · 12:00 · 18:00</span>
+            </div>
+            <div id="operationsSchedule" class="schedule-list"><p class="muted">일정을 불러오는 중입니다.</p></div>
+          </section>
+          <section aria-labelledby="errors-title">
+            <div class="table-heading compact-heading">
+              <h3 id="errors-title">최근 확인 필요 항목</h3>
+              <span id="operationsErrorCount" class="count">0건</span>
+            </div>
+            <div id="operationsErrors" class="operations-list"><p class="muted">오류를 불러오는 중입니다.</p></div>
+          </section>
+        </div>
+        <section class="operations-table" aria-labelledby="queue-title">
+          <div class="table-heading compact-heading">
+            <h3 id="queue-title">오늘 대기열</h3>
+            <span class="muted">준비 이후 20분 단위로 순차 처리</span>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>순서</th><th>상품</th><th>예정가</th><th>상태</th><th>처리 시각</th><th>공개 글</th></tr></thead>
+              <tbody id="operationsQueueRows"><tr><td colspan="6" class="empty">운영 현황을 불러오는 중입니다.</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="operations-published" aria-labelledby="published-title">
+          <div class="table-heading compact-heading">
+            <h3 id="published-title">최근 공개된 글</h3>
+            <span class="muted">공개 URL만 표시</span>
+          </div>
+          <div id="operationsPublished" class="operations-list"><p class="muted">게시 이력을 불러오는 중입니다.</p></div>
+        </section>
+        <p id="operationsStatus" class="status" role="status">이 영역은 조회 전용이며, 발행·대기열·예약 설정을 변경하지 않습니다.</p>
+      </section>
+
       <section class="card controls" aria-labelledby="publisher-title">
         <div>
           <p class="section-kicker">PUBLISHER</p>
@@ -106,6 +175,6 @@
       </section>
     </section>
   </main>
-  <script src="/admin.js?v=admin-link-v1"></script>
+  <script src="/admin.js?v=operations-v1"></script>
 </body>
 </html>

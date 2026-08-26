@@ -132,3 +132,36 @@ tbody tr:last-child td { border-bottom: 0; }
 @media (max-width: 780px) {
   .publisher-form { grid-template-columns: 1fr; }
 }
+
+.operations-card { display: grid; gap: 24px; }
+.operations-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.operation-metric { display: grid; gap: 6px; min-height: 128px; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: #fbfcfe; }
+.metric-label { color: var(--muted); font-size: 12px; font-weight: 800; }
+.operation-metric strong { color: var(--ink); font-size: 20px; letter-spacing: -.03em; line-height: 1.25; }
+.metric-detail { color: #475467; font-size: 13px; }
+.operations-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.operations-layout section, .operations-table, .operations-published { min-width: 0; }
+.compact-heading { margin-bottom: 10px; }
+.compact-heading h3 { margin: 0; font-size: 16px; letter-spacing: -.02em; }
+.schedule-list, .operations-list { display: grid; gap: 8px; }
+.schedule-row, .operations-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.schedule-row:last-child, .operations-item:last-child { border-bottom: 0; }
+.schedule-main, .operations-item-main { display: grid; min-width: 0; gap: 2px; }
+.schedule-main strong, .operations-item-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.schedule-main span, .operations-item-main span { color: var(--muted); font-size: 12px; }
+.operations-item.error .operations-item-main span { color: var(--danger); }
+.operations-table { display: grid; gap: 0; }
+.operations-table table { min-width: 760px; }
+.queue-product { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.public-link { color: var(--brand-dark); font-size: 13px; font-weight: 750; text-decoration: none; }
+.public-link:hover { text-decoration: underline; }
+.operation-empty { margin: 0; padding: 14px 0; color: var(--muted); font-size: 14px; }
+
+@media (max-width: 980px) {
+  .operations-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 780px) {
+  .operations-grid, .operations-layout { grid-template-columns: 1fr; }
+  .operation-metric { min-height: 104px; }
+}

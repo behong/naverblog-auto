@@ -15,8 +15,25 @@
   const collectionStatus = document.querySelector("#collectionStatus");
   const productRows = document.querySelector("#productRows");
   const productCount = document.querySelector("#productCount");
+  const refreshOperations = document.querySelector("#refreshOperations");
+  const operationsUpdated = document.querySelector("#operationsUpdated");
+  const operationsService = document.querySelector("#operationsService");
+  const operationsServiceDetail = document.querySelector("#operationsServiceDetail");
+  const operationsQueueCount = document.querySelector("#operationsQueueCount");
+  const operationsQueueDetail = document.querySelector("#operationsQueueDetail");
+  const operationsNext = document.querySelector("#operationsNext");
+  const operationsNextDetail = document.querySelector("#operationsNextDetail");
+  const operationsLatest = document.querySelector("#operationsLatest");
+  const operationsLatestDetail = document.querySelector("#operationsLatestDetail");
+  const operationsSchedule = document.querySelector("#operationsSchedule");
+  const operationsErrorCount = document.querySelector("#operationsErrorCount");
+  const operationsErrors = document.querySelector("#operationsErrors");
+  const operationsQueueRows = document.querySelector("#operationsQueueRows");
+  const operationsPublished = document.querySelector("#operationsPublished");
+  const operationsStatus = document.querySelector("#operationsStatus");
 
   let csrfToken = "";
+  let operationsRefreshTimer = null;
 
   const setStatus = (element, text, tone = "") => {
     element.textContent = text;
@@ -26,6 +43,7 @@
   const setBusy = (busy) => {
     loadProducts.disabled = busy;
     collectProducts.disabled = busy;
+    refreshOperations.disabled = busy;
     logout.disabled = busy;
     publisherForm.querySelector("button[type=submit]").disabled = busy;
     productRows.querySelectorAll("button[data-issue-id], button[data-copy-url], button[data-prepare-draft]").forEach((button) => {
@@ -53,7 +71,13 @@
   const formatDate = (value) => {
     if (!value) return "—";
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" });
+    return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short", timeZone: "Asia/Seoul" });
+  };
+
+  const formatKstTime = (value) => {
+    if (!value) return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Seoul" });
   };
 
   const textCell = (value) => {
@@ -67,6 +91,193 @@
     result.className = `badge ${tone}`;
     result.textContent = text;
     return result;
+  };
+
+  const operationStatusLabel = (value) => ({
+    PENDING: "승인 대기",
+    APPROVED: "준비 완료",
+    HELD: "보류",
+    EXPIRED: "만료",
+    QUEUED: "대기",
+    RELEASED: "발행 중",
+    PUBLISHED: "공개 완료",
+    FAILED_PRE_SUBMIT: "공개 전 중단",
+    PUBLISH_UNKNOWN: "공개 확인 필요",
+    SKIPPED: "건너뜀",
+    FAILED: "실패",
+    AUTH_REQUIRED: "인증 필요",
+    PRICE_MISMATCH: "가격 불일치",
+    IMAGE_FAILED: "이미지 확인 실패",
+    EDITOR_FAILED: "에디터 입력 실패",
+  }[value] || value || "예정");
+
+  const operationStatusTone = (value) => {
+    if (["PUBLISHED", "APPROVED"].includes(value)) return "ok";
+    if (["FAILED_PRE_SUBMIT", "PUBLISH_UNKNOWN", "FAILED", "AUTH_REQUIRED", "PRICE_MISMATCH", "IMAGE_FAILED", "EDITOR_FAILED", "HELD", "EXPIRED"].includes(value)) return "alert";
+    return "muted";
+  };
+
+  const operationsEmpty = (container, message) => {
+    container.replaceChildren();
+    const note = document.createElement("p");
+    note.className = "operation-empty";
+    note.textContent = message;
+    container.append(note);
+  };
+
+  const renderOperations = (data) => {
+    const counts = data.queue_counts || {};
+    const queued = Number(counts.QUEUED) || 0;
+    const released = Number(counts.RELEASED) || 0;
+    const published = Number(counts.PUBLISHED) || 0;
+    const uncertain = (Number(counts.FAILED_PRE_SUBMIT) || 0) + (Number(counts.PUBLISH_UNKNOWN) || 0);
+    const total = Object.values(counts).reduce((sum, value) => sum + (Number(value) || 0), 0);
+    const latestPublished = Array.isArray(data.recent_published) ? data.recent_published[0] : null;
+
+    operationsUpdated.textContent = `${data.date || "오늘"} 기준 · 마지막 조회 ${formatKstTime(data.generated_at)}`;
+    operationsService.textContent = data.release_paused ? "발행 일시 정지" : (data.auto_publish_enabled ? "자동 발행 설정" : "승인 방식 설정");
+    operationsServiceDetail.textContent = data.release_paused
+      ? "20분 단위 대기열 해제가 중지된 상태입니다."
+      : (data.auto_publish_enabled ? "검증을 통과한 예약 항목을 순차 발행합니다." : "준비 배치의 승인 상태를 확인해 발행합니다.");
+    operationsQueueCount.textContent = total ? `${published}/${total}건 공개` : "등록 없음";
+    operationsQueueDetail.textContent = total ? `대기 ${queued} · 발행 중 ${released} · 확인 필요 ${uncertain}` : "오늘 생성된 예약 항목이 없습니다.";
+    operationsNext.textContent = data.next_planned ? data.next_planned.label : "—";
+    operationsNextDetail.textContent = data.next_planned ? `${formatKstTime(data.next_planned.at)} · ${Number(data.next_planned.expected_count) || 0}건 준비 예정` : "고정 일정을 확인하지 못했습니다.";
+    operationsLatest.textContent = latestPublished ? "공개 완료" : "아직 없음";
+    operationsLatestDetail.textContent = latestPublished ? `${latestPublished.product_name || "상품"} · ${formatKstTime(latestPublished.published_at)}` : "최근 공개 URL이 없습니다.";
+
+    operationsSchedule.replaceChildren();
+    const schedule = Array.isArray(data.schedule) ? data.schedule : [];
+    if (!schedule.length) {
+      operationsEmpty(operationsSchedule, "오늘의 고정 준비 일정을 불러오지 못했습니다.");
+    } else {
+      for (const item of schedule) {
+        const row = document.createElement("div");
+        row.className = "schedule-row";
+        const main = document.createElement("div");
+        main.className = "schedule-main";
+        const label = document.createElement("strong");
+        label.textContent = `${item.time || "—"} ${item.label || "준비"}`;
+        const detail = document.createElement("span");
+        const completed = item.item_count ? ` · 준비 ${item.item_count}건` : "";
+        detail.textContent = `예정 ${Number(item.expected_count) || 0}건${completed}`;
+        main.append(label, detail);
+        row.append(main, badge(operationStatusLabel(item.status), operationStatusTone(item.status)));
+        operationsSchedule.append(row);
+      }
+    }
+
+    operationsQueueRows.replaceChildren();
+    const queue = Array.isArray(data.queue) ? data.queue : [];
+    if (!queue.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 6;
+      cell.className = "empty";
+      cell.textContent = "오늘 등록된 토스 예약 항목이 없습니다.";
+      row.append(cell);
+      operationsQueueRows.append(row);
+    } else {
+      for (const item of queue) {
+        const row = document.createElement("tr");
+        row.append(textCell(`${item.sequence_no || "—"}번`));
+        const name = textCell(item.product_name || "상품 정보 없음");
+        name.className = "queue-product";
+        row.append(name);
+        row.append(textCell(formatPrice(item.expected_price)));
+        const state = document.createElement("td");
+        state.append(badge(operationStatusLabel(item.status), operationStatusTone(item.status)));
+        row.append(state);
+        row.append(textCell(formatKstTime(item.finished_at || item.released_at || item.created_at)));
+        const link = document.createElement("td");
+        if (item.public_url) {
+          const anchor = document.createElement("a");
+          anchor.className = "public-link";
+          anchor.href = item.public_url;
+          anchor.target = "_blank";
+          anchor.rel = "noopener noreferrer";
+          anchor.textContent = "공개 글 열기";
+          link.append(anchor);
+        } else {
+          link.textContent = "—";
+        }
+        row.append(link);
+        operationsQueueRows.append(row);
+      }
+    }
+
+    const errors = Array.isArray(data.recent_errors) ? data.recent_errors : [];
+    operationsErrorCount.textContent = `${errors.length}건`;
+    operationsErrors.replaceChildren();
+    if (!errors.length) {
+      operationsEmpty(operationsErrors, "최근 확인이 필요한 토스 오류가 없습니다.");
+    } else {
+      for (const item of errors) {
+        const row = document.createElement("div");
+        row.className = "operations-item error";
+        const main = document.createElement("div");
+        main.className = "operations-item-main";
+        const name = document.createElement("strong");
+        name.textContent = item.product_name || "상품 정보 없음";
+        const detail = document.createElement("span");
+        detail.textContent = `${operationStatusLabel(item.status)} · ${item.step || "자동화"}${item.error_message ? ` · ${item.error_message}` : ""}`;
+        main.append(name, detail);
+        row.append(main, badge(formatKstTime(item.occurred_at), "alert"));
+        operationsErrors.append(row);
+      }
+    }
+
+    const publishedItems = Array.isArray(data.recent_published) ? data.recent_published : [];
+    operationsPublished.replaceChildren();
+    if (!publishedItems.length) {
+      operationsEmpty(operationsPublished, "공개 URL이 기록된 최근 토스 글이 없습니다.");
+    } else {
+      for (const item of publishedItems) {
+        const row = document.createElement("div");
+        row.className = "operations-item";
+        const main = document.createElement("div");
+        main.className = "operations-item-main";
+        const name = document.createElement("strong");
+        name.textContent = item.product_name || "상품 정보 없음";
+        const detail = document.createElement("span");
+        detail.textContent = `공개 ${formatKstTime(item.published_at)}`;
+        main.append(name, detail);
+        const anchor = document.createElement("a");
+        anchor.className = "public-link";
+        anchor.href = item.public_url;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        anchor.textContent = "글 열기";
+        row.append(main, anchor);
+        operationsPublished.append(row);
+      }
+    }
+  };
+
+  const loadOperations = async (quiet = false) => {
+    if (dashboard.hidden) return;
+    refreshOperations.disabled = true;
+    if (!quiet) setStatus(operationsStatus, "운영 현황을 불러오는 중입니다.");
+    try {
+      const result = await api("/api/admin/toss/operations");
+      renderOperations(result || {});
+      setStatus(operationsStatus, "조회 전용 현황입니다. 이 화면에서는 발행·대기열·예약 설정을 변경하지 않습니다.", "success");
+    } catch (error) {
+      if (!dashboard.hidden) setStatus(operationsStatus, error.message || "운영 현황을 불러오지 못했습니다.", "error");
+    } finally {
+      refreshOperations.disabled = false;
+    }
+  };
+
+  const startOperationsRefresh = () => {
+    if (operationsRefreshTimer) return;
+    operationsRefreshTimer = window.setInterval(() => { loadOperations(true); }, 60000);
+  };
+
+  const stopOperationsRefresh = () => {
+    if (!operationsRefreshTimer) return;
+    window.clearInterval(operationsRefreshTimer);
+    operationsRefreshTimer = null;
   };
 
   const renderRows = (items) => {
@@ -143,12 +354,14 @@
     loginPanel.style.display = "none";
     dashboard.hidden = false;
     dashboard.style.display = "block";
+    startOperationsRefresh();
     password.value = "";
     setStatus(loginStatus, "");
   };
 
   const leaveDashboard = (message = "로그인 후 수집 목록을 확인할 수 있습니다.") => {
     csrfToken = "";
+    stopOperationsRefresh();
     dashboard.hidden = true;
     dashboard.style.display = "none";
     loginPanel.hidden = false;
@@ -342,6 +555,7 @@
       csrfToken = payload.result.csrf_token;
       enterDashboard();
       await loadSettings();
+      await loadOperations();
       await pairExtensionDevice().catch(() => undefined);
       setTimeout(() => { showApprovalDispatchTrace().catch(() => undefined); }, 1500);
       await load();
@@ -446,6 +660,7 @@
     }
   });
 
+  refreshOperations.addEventListener("click", () => loadOperations());
   loadProducts.addEventListener("click", () => load());
   collectProducts.addEventListener("click", collect);
   source.addEventListener("change", () => {
@@ -461,6 +676,7 @@
       if (!csrfToken) throw new Error("세션 정보가 없습니다.");
       enterDashboard();
       await loadSettings();
+      await loadOperations();
       await pairExtensionDevice().catch(() => undefined);
       setTimeout(() => { showApprovalDispatchTrace().catch(() => undefined); }, 1500);
       await load();

@@ -51,6 +51,7 @@ from automation_store import (
     init_schema as init_automation_schema,
     recent_runs,
     recent_toss_products,
+    toss_operations_summary,
     set_admin_password_hash,
     set_admin_toss_publisher_id,
     toss_product_with_share_link,
@@ -680,6 +681,9 @@ class AppHandler(BaseHTTPRequestHandler):
                             },
                         }
                     )
+                    return
+                if parsed.path == "/api/admin/toss/operations":
+                    self._send_admin_json({"ok": True, "result": toss_operations_summary()})
                     return
                 if parsed.path == "/api/admin/toss/products":
                     source = query.get("source", ["best-selling"])[0]

@@ -54,6 +54,57 @@ class AutomationStoreTests(unittest.TestCase):
         self.assertTrue(automation_store._requires_cross_platform_publish_gap("coupang-publish"))
         self.assertTrue(automation_store._requires_cross_platform_publish_gap(""))
 
+    def test_scheduled_toss_release_skips_gap_check_when_beginning_publish(self) -> None:
+        batch_id = "550e8400-e29b-41d4-a716-446655440000"
+        product = {
+            "platform": "toss",
+            "product_id": "item-123",
+            "product_name": "검증 상품",
+            "sale_price": 9900,
+            "affiliate_url": "https://toss.im/_m/verified",
+            "naver_category": "39",
+        }
+        batch = {
+            "id": batch_id,
+            "status": "APPROVED",
+            "summary": [{"product_id": "item-123", "product_name": "검증 상품"}],
+            "source": "toss-scheduled-release",
+            "extension_claimed_at": object(),
+            "publish_state": "NOT_STARTED",
+        }
+
+        class Result:
+            def __init__(self, row=None):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        class Connection:
+            def execute(self, query, *_args):
+                if "FROM publication_approval_batches" in query:
+                    return Result(batch)
+                if "FROM blog_posts" in query:
+                    return Result(None)
+                return Result(None)
+
+        class ConnectionContext:
+            def __enter__(self):
+                return Connection()
+
+            def __exit__(self, *_args):
+                return False
+
+        with (
+            patch.object(automation_store, "_connect", return_value=ConnectionContext()),
+            patch.object(automation_store, "enforce_cross_platform_publish_gap") as gap_check,
+        ):
+            result = automation_store.begin_extension_publish(batch_id, product)
+
+        self.assertEqual(result["publish_state"], "PUBLISHING")
+        self.assertTrue(result["publish_token"])
+        gap_check.assert_not_called()
+
     def test_toss_operations_summary_is_read_only_and_safe(self) -> None:
         now = datetime(2026, 8, 26, 4, 0, tzinfo=timezone.utc)
         query_log = []

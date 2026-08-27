@@ -712,6 +712,11 @@ def mark_publication_approval_claimed(batch_id: str) -> bool:
 MIN_CROSS_PLATFORM_PUBLISH_GAP_MINUTES = 60
 
 
+def _requires_cross_platform_publish_gap(source: object) -> bool:
+    """Keep manual/non-scheduled publishing serialized, but never fail Toss schedule slots for Coupang spacing."""
+    return str(source or "").strip() != "toss-scheduled-release"
+
+
 def enforce_cross_platform_publish_gap(conn, platform: str) -> None:
     """Prevent Toss and Coupang from starting Naver publication too close together."""
     normalized = str(platform or '').strip().lower()
@@ -976,10 +981,9 @@ def begin_extension_publish(batch_id: str, product: dict[str, Any]) -> dict[str,
     parsed_id = uuid.UUID(str(batch_id))
     values = _publish_product_values(product)
     with _connect() as conn:
-        enforce_cross_platform_publish_gap(conn, values['platform'])
         batch_row = conn.execute(
             """
-            SELECT id, status, summary, extension_claimed_at, publish_state
+            SELECT id, status, summary, source, extension_claimed_at, publish_state
             FROM publication_approval_batches
             WHERE id = %s
             FOR UPDATE
@@ -996,6 +1000,8 @@ def begin_extension_publish(batch_id: str, product: dict[str, Any]) -> dict[str,
             raise ValueError("approval batch product does not match the publish request")
         if str(batch.get("publish_state") or "NOT_STARTED") in {"PUBLISHING", "PUBLISHED", "PUBLISH_UNKNOWN"}:
             raise ValueError("this approval batch already has a publish attempt")
+        if _requires_cross_platform_publish_gap(batch.get("source")):
+            enforce_cross_platform_publish_gap(conn, values["platform"])
         existing = conn.execute(
             """
             SELECT status, naver_post_url

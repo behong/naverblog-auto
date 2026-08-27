@@ -48,6 +48,12 @@ class AutomationStoreTests(unittest.TestCase):
         self.assertEqual(automation_store._operations_public_post_url("https://toss.im/_m/example"), "")
         self.assertEqual(automation_store._operations_public_post_url("javascript:alert(1)"), "")
 
+    def test_scheduled_toss_release_is_exempt_from_cross_platform_gap(self) -> None:
+        self.assertFalse(automation_store._requires_cross_platform_publish_gap("toss-scheduled-release"))
+        self.assertTrue(automation_store._requires_cross_platform_publish_gap("toss-daily"))
+        self.assertTrue(automation_store._requires_cross_platform_publish_gap("coupang-publish"))
+        self.assertTrue(automation_store._requires_cross_platform_publish_gap(""))
+
     def test_toss_operations_summary_is_read_only_and_safe(self) -> None:
         now = datetime(2026, 8, 26, 4, 0, tzinfo=timezone.utc)
         query_log = []

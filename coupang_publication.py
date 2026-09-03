@@ -97,36 +97,40 @@ def candidate_payload(candidate: CoupangCandidate) -> dict[str, Any]:
 
 
 def request_coupang_publication_approval(payload: dict[str, Any], ttl_minutes: int = 30) -> dict[str, Any]:
-    """Validate one candidate and enqueue it for approval-free automatic publication.
-
-    The existing validation gates still run before the batch is auto-approved. The
-    publisher extension then uses the same single-use claim and result verification
-    path, while Telegram receives start/success/failure notifications only.
-    """
+    """Validate one candidate and enqueue it for approval-free automatic publication."""
+    # 쿠팡 자동 발행 중지 (사용자 요청)
     candidate = candidate_from_payload(payload)
-    if duplicate_coupang_product(candidate.product_id):
-        return {
-            "skipped": True,
-            "reason": "이미 발행 중이거나 발행된 쿠팡 상품은 다시 승인할 수 없습니다.",
-            "product_id": candidate.product_id,
-            "product_name": candidate.product_name,
-        }
-    summary = [{
+    return {
+        "skipped": True,
+        "reason": "사용자 요청으로 쿠팡 자동 등록 시스템이 중지되었습니다.",
         "product_id": candidate.product_id,
         "product_name": candidate.product_name,
-        "display_price": candidate.conditional_price,
-        "normal_price": candidate.normal_price,
-        "sale_price": candidate.sale_price,
-        "conditional_price": candidate.conditional_price,
-        "price_condition": candidate.price_condition,
-        "affiliate_domain": (urlparse(candidate.affiliate_url).hostname or "").lower(),
-        "source_image_verified": True,
-        "candidate": candidate_payload(candidate),
-    }]
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=max(5, min(int(ttl_minutes or 30), 180)))
-    batch = create_publication_approval_batch(summary, expires_at, source=COUPANG_APPROVAL_SOURCE)
-    approved = auto_approve_publication_batch(str(batch["id"]))
-    return {"auto_published": True, "batch_id": str(approved["id"]), "status": approved["status"], "source": COUPANG_APPROVAL_SOURCE}
+    }
+    # ... 기존 로직 비활성화 ...
+    # candidate = candidate_from_payload(payload)
+    # if duplicate_coupang_product(candidate.product_id):
+    #     return {
+    #         "skipped": True,
+    #         "reason": "이미 발행 중이거나 발행된 쿠팡 상품은 다시 승인할 수 없습니다.",
+    #         "product_id": candidate.product_id,
+    #         "product_name": candidate.product_name,
+    #     }
+    # summary = [{
+    #     "product_id": candidate.product_id,
+    #     "product_name": candidate.product_name,
+    #     "display_price": candidate.conditional_price,
+    #     "normal_price": candidate.normal_price,
+    #     "sale_price": candidate.sale_price,
+    #     "conditional_price": candidate.conditional_price,
+    #     "price_condition": candidate.price_condition,
+    #     "affiliate_domain": (urlparse(candidate.affiliate_url).hostname or "").lower(),
+    #     "source_image_verified": True,
+    #     "candidate": candidate_payload(candidate),
+    # }]
+    # expires_at = datetime.now(timezone.utc) + timedelta(minutes=max(5, min(int(ttl_minutes or 30), 180)))
+    # batch = create_publication_approval_batch(summary, expires_at, source=COUPANG_APPROVAL_SOURCE)
+    # approved = auto_approve_publication_batch(str(batch["id"]))
+    # return {"auto_published": True, "batch_id": str(approved["id"]), "status": approved["status"], "source": COUPANG_APPROVAL_SOURCE}
 
 
 def duplicate_coupang_product(product_id: str) -> bool:

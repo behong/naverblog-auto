@@ -392,25 +392,19 @@ async function scheduleOneTimeSmokeTest() {
   }
 }
 
-installAutoAlarms();
-scheduleOneTimeSmokeTest().catch((error) => console.error('Coupang smoke test scheduling failed', error));
+// 자동 예약 수집 중지 (사용자 요청)
+// installAutoAlarms();
+// scheduleOneTimeSmokeTest().catch((error) => console.error('Coupang smoke test scheduling failed', error));
 chrome.runtime.onInstalled.addListener(() => {
-  installAutoAlarms();
-  chrome.alarms.create('coupang-goldbox-test', { when: Date.now() + 60 * 1000 });
+  // installAutoAlarms();
+  chrome.alarms.clearAll();
 });
-chrome.runtime.onStartup.addListener(installAutoAlarms);
+chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.clearAll();
+});
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (!/^coupang-goldbox-/.test(alarm.name)) return;
-  if (alarm.name === 'coupang-goldbox-test') {
-    runScheduledGoldbox(1).then((result) => {
-      console.info('[Coupang] automatic test finished:', result);
-      return chrome.storage.local.set({ coupangAutoSmokeTestCompleted: '0.2.6' });
-    }).catch((error) => console.error('Coupang automatic test failed', error));
-    return;
-  }
-  const hour = Number(String(alarm.name).split('-').pop());
-  const limit = hour === 12 ? 2 : 4;
-  runScheduledGoldbox(limit).catch((error) => console.error('Coupang scheduled run failed', error));
+  chrome.alarms.clear(alarm.name);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

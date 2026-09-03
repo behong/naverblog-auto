@@ -150,6 +150,8 @@ async function recordApprovalDispatchTrace(patch) {
 }
 
 async function pollApprovedDraft() {
+  // 쿠팡 자동 발행 중지 (사용자 요청)
+  return;
   if (approvalDispatchInFlight) return;
   const rateLimit = await chrome.storage.local.get(LAST_COUPANG_PUBLISH_AT_KEY);
   const lastPublishAt = Number(rateLimit[LAST_COUPANG_PUBLISH_AT_KEY] || 0);
